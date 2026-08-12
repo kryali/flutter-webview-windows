@@ -68,17 +68,6 @@ set(PLUGIN_SOURCES
 # Create the plugin library
 add_library(${PLUGIN_NAME} SHARED ${PLUGIN_SOURCES})
 
-# Configure compiler options
-if(MSVC)
-  target_compile_options(${PLUGIN_NAME} PRIVATE "/await")
-  # Newer MSVC/STL releases (VS 2026+) hard-error on the old Coroutines TS
-  # headers /await pulls in (<experimental/coroutine>), which is otherwise
-  # just a deprecation warning on older toolsets.
-  target_compile_definitions(${PLUGIN_NAME} PRIVATE
-    _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
-  )
-endif()
-
 # Apply standard settings
 apply_standard_settings(${PLUGIN_NAME})
 
