@@ -1,3 +1,7 @@
+## Unreleased
+
+* Add `WebviewController.setNavigationBlocklist` and `onNavigationBlocked` to cancel navigations to matching URLs before they render, backed by WebView2's `NavigationStarting` event
+
 ## 0.4.0
 
 * Enable MSVC coroutine support ([#278](https://github.com/jnschulze/flutter-webview-windows/pull/278))

@@ -2,6 +2,7 @@
 
 #include <wrl.h>
 
+#include <algorithm>
 #include <format>
 #include <iostream>
 
@@ -340,6 +341,47 @@ void Webview::RegisterEventHandlers() {
           .Get(),
       &event_registrations_.permission_requested_token_);
 
+  webview_->add_NavigationStarting(
+      Callback<ICoreWebView2NavigationStartingEventHandler>(
+          [this](ICoreWebView2* sender,
+                 ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
+            if (navigation_blocklist_.empty()) {
+              return S_OK;
+            }
+
+            wil::unique_cotaskmem_string wuri;
+            if (args->get_Uri(&wuri) != S_OK) {
+              return S_OK;
+            }
+            const std::string uri = util::Utf8FromUtf16(wuri.get());
+
+            const bool blocked =
+                std::any_of(navigation_blocklist_.begin(),
+                            navigation_blocklist_.end(),
+                            [&uri](const std::string& prefix) {
+                              return uri.compare(0, prefix.size(), prefix) ==
+                                     0;
+                            });
+            if (!blocked) {
+              return S_OK;
+            }
+
+            args->put_Cancel(TRUE);
+
+            if (navigation_blocked_callback_) {
+              BOOL is_user_initiated = false;
+              BOOL is_redirected = false;
+              args->get_IsUserInitiated(&is_user_initiated);
+              args->get_IsRedirected(&is_redirected);
+              navigation_blocked_callback_(uri, is_user_initiated == TRUE,
+                                           is_redirected == TRUE);
+            }
+
+            return S_OK;
+          })
+          .Get(),
+      &event_registrations_.navigation_starting_token_);
+
   webview_->add_NewWindowRequested(
       Callback<ICoreWebView2NewWindowRequestedEventHandler>(
           [this](ICoreWebView2* sender,
@@ -600,6 +642,10 @@ bool Webview::SetCacheDisabled(bool disabled) {
 
 void Webview::SetPopupWindowPolicy(WebviewPopupWindowPolicy policy) {
   popup_window_policy_ = policy;
+}
+
+void Webview::SetNavigationBlocklist(std::vector<std::string> url_prefixes) {
+  navigation_blocklist_ = std::move(url_prefixes);
 }
 
 bool Webview::SetUserAgent(const std::string& user_agent) {

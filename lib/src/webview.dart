@@ -31,6 +31,17 @@ class WebviewDownloadEvent {
   );
 }
 
+class NavigationBlockedEvent {
+  final String url;
+  final bool isUserInitiated;
+  final bool isRedirected;
+  const NavigationBlockedEvent(
+    this.url,
+    this.isUserInitiated,
+    this.isRedirected,
+  );
+}
+
 typedef PermissionRequestedDelegate
     = FutureOr<WebviewPermissionDecision> Function(
         String url, WebviewPermissionKind permissionKind, bool isUserInitiated);
@@ -130,6 +141,10 @@ class WebviewController extends ValueNotifier<WebviewValue> {
   final StreamController<WebviewDownloadEvent> _downloadEventStreamController =
       StreamController<WebviewDownloadEvent>.broadcast();
 
+  final StreamController<NavigationBlockedEvent>
+      _navigationBlockedStreamController =
+      StreamController<NavigationBlockedEvent>.broadcast();
+
   final StreamController<WebErrorStatus> _onLoadErrorStreamController =
       StreamController<WebErrorStatus>();
 
@@ -138,6 +153,11 @@ class WebviewController extends ValueNotifier<WebviewValue> {
 
   Stream<WebviewDownloadEvent> get onDownloadEvent =>
       _downloadEventStreamController.stream;
+
+  /// A stream of navigations that were cancelled before they loaded because
+  /// their URL matched a prefix passed to [setNavigationBlocklist].
+  Stream<NavigationBlockedEvent> get onNavigationBlocked =>
+      _navigationBlockedStreamController.stream;
 
   /// A stream reflecting the navigation error when navigation completed with an error.
   Stream<WebErrorStatus> get onLoadError => _onLoadErrorStreamController.stream;
@@ -245,6 +265,14 @@ class WebviewController extends ValueNotifier<WebviewValue> {
             break;
           case 'containsFullScreenElementChanged':
             _containsFullScreenElementChangedStreamController.add(map['value']);
+            break;
+          case 'navigationBlocked':
+            final value = NavigationBlockedEvent(
+              map['value']['url'],
+              map['value']['isUserInitiated'],
+              map['value']['isRedirected'],
+            );
+            _navigationBlockedStreamController.add(value);
             break;
         }
       });
@@ -542,6 +570,23 @@ class WebviewController extends ValueNotifier<WebviewValue> {
     assert(value.isInitialized);
     return _methodChannel.invokeMethod(
         'setPopupWindowPolicy', popupPolicy.index);
+  }
+
+  /// Prevents navigations to URLs starting with any of the given
+  /// [urlPrefixes] from ever loading or rendering.
+  ///
+  /// Matched navigations are cancelled by WebView2 before they start, since
+  /// its `NavigationStarting` event doesn't support deferring the decision
+  /// (unlike e.g. permission requests), so the check happens natively and
+  /// synchronously rather than round-tripping to Dart for each navigation.
+  /// Listen to [onNavigationBlocked] to react afterwards, e.g. to show a
+  /// native replacement screen.
+  Future<void> setNavigationBlocklist(List<String> urlPrefixes) async {
+    if (_isDisposed) {
+      return;
+    }
+    assert(value.isInitialized);
+    return _methodChannel.invokeMethod('setNavigationBlocklist', urlPrefixes);
   }
 
   /// Suspends the web view.

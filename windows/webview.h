@@ -113,6 +113,7 @@ struct EventRegistrations {
   EventRegistrationToken lost_focus_token_{};
   EventRegistrationToken web_message_received_token_{};
   EventRegistrationToken permission_requested_token_{};
+  EventRegistrationToken navigation_starting_token_{};
   EventRegistrationToken devtools_protocol_event_token_{};
   EventRegistrationToken new_windows_requested_token_{};
   EventRegistrationToken contains_fullscreen_element_changed_token_{};
@@ -149,6 +150,9 @@ class Webview {
                              bool is_user_initiated,
                              WebviewPermissionRequestedCompleter completer)>
       PermissionRequestedCallback;
+  typedef std::function<void(const std::string& url, bool is_user_initiated,
+                             bool is_redirected)>
+      NavigationBlockedCallback;
   typedef std::function<void(bool contains_fullscreen_element)>
       ContainsFullScreenElementChangedCallback;
   typedef std::function<void(WebviewDownloadEvent)> DownloadEventCallback;
@@ -193,6 +197,11 @@ class Webview {
   bool ClearCache();
   bool SetCacheDisabled(bool disabled);
   void SetPopupWindowPolicy(WebviewPopupWindowPolicy policy);
+  // Cancels (before it ever renders) any navigation whose URL starts with
+  // one of the given prefixes. WebView2's NavigationStarting event doesn't
+  // support deferral, so this decision has to be made synchronously and
+  // natively rather than round-tripped to Dart per navigation.
+  void SetNavigationBlocklist(std::vector<std::string> url_prefixes);
   bool SetUserAgent(const std::string& user_agent);
   bool OpenDevTools();
   bool SetBackgroundColor(int32_t color);
@@ -251,6 +260,10 @@ class Webview {
     permission_requested_callback_ = std::move(callback);
   }
 
+  void OnNavigationBlocked(NavigationBlockedCallback callback) {
+    navigation_blocked_callback_ = std::move(callback);
+  }
+
   void OnDevtoolsProtocolEvent(DevtoolsProtocolEventCallback callback) {
     devtools_protocol_event_callback_ = std::move(callback);
   }
@@ -275,6 +288,7 @@ class Webview {
   VirtualKeyState virtual_keys_;
   WebviewPopupWindowPolicy popup_window_policy_ =
       WebviewPopupWindowPolicy::Allow;
+  std::vector<std::string> navigation_blocklist_;
 
   winrt::com_ptr<ABI::Windows::UI::Composition::IVisual> surface_;
   winrt::com_ptr<ABI::Windows::UI::Composition::Desktop::IDesktopWindowTarget>
@@ -294,6 +308,7 @@ class Webview {
   FocusChangedCallback focus_changed_callback_;
   WebMessageReceivedCallback web_message_received_callback_;
   PermissionRequestedCallback permission_requested_callback_;
+  NavigationBlockedCallback navigation_blocked_callback_;
   DevtoolsProtocolEventCallback devtools_protocol_event_callback_;
   ContainsFullScreenElementChangedCallback
       contains_fullscreen_element_changed_callback_;

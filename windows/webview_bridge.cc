@@ -42,6 +42,7 @@ constexpr auto kMethodGetCookies = "getCookies";
 constexpr auto kMethodClearCache = "clearCache";
 constexpr auto kMethodSetCacheDisabled = "setCacheDisabled";
 constexpr auto kMethodSetPopupWindowPolicy = "setPopupWindowPolicy";
+constexpr auto kMethodSetNavigationBlocklist = "setNavigationBlocklist";
 constexpr auto kMethodSetFpsLimit = "setFpsLimit";
 
 constexpr auto kEventType = "type";
@@ -313,6 +314,23 @@ void WebviewBridge::RegisterEventHandlers() {
              Webview::WebviewPermissionRequestedCompleter completer) {
         OnPermissionRequested(url, kind, is_user_initiated, completer);
       });
+
+  webview_->OnNavigationBlocked([this](const std::string& url,
+                                       bool isUserInitiated,
+                                       bool isRedirected) {
+    const auto event = flutter::EncodableValue(flutter::EncodableMap{
+        {flutter::EncodableValue(kEventType),
+         flutter::EncodableValue("navigationBlocked")},
+        {flutter::EncodableValue(kEventValue),
+         flutter::EncodableValue(flutter::EncodableMap{
+             {flutter::EncodableValue("url"), flutter::EncodableValue(url)},
+             {flutter::EncodableValue("isUserInitiated"),
+              flutter::EncodableValue(isUserInitiated)},
+             {flutter::EncodableValue("isRedirected"),
+              flutter::EncodableValue(isRedirected)},
+         })}});
+    EmitEvent(event);
+  });
 
   webview_->OnContainsFullScreenElementChanged(
       [this](bool contains_fullscreen_element) {
@@ -781,6 +799,28 @@ void WebviewBridge::HandleMethodCall(
       return result->Success();
     }
     return result->Error(kErrorInvalidArgs);
+  }
+
+  // setNavigationBlocklist: List<String> (URL prefixes to cancel before load)
+  if (method_name.compare(kMethodSetNavigationBlocklist) == 0) {
+    const flutter::EncodableList* list =
+        std::get_if<flutter::EncodableList>(method_call.arguments());
+    if (!list) {
+      return result->Error(kErrorInvalidArgs);
+    }
+
+    std::vector<std::string> prefixes;
+    prefixes.reserve(list->size());
+    for (const auto& value : *list) {
+      const auto prefix = std::get_if<std::string>(&value);
+      if (!prefix) {
+        return result->Error(kErrorInvalidArgs);
+      }
+      prefixes.push_back(*prefix);
+    }
+
+    webview_->SetNavigationBlocklist(std::move(prefixes));
+    return result->Success();
   }
 
   if (method_name.compare(kMethodSetFpsLimit) == 0) {

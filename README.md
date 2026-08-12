@@ -23,6 +23,25 @@ https://user-images.githubusercontent.com/720469/116716747-66f08180-a9d8-11eb-86
 
 
 
+## Preventing navigations
+
+`WebviewController.setNavigationBlocklist` lets you cancel navigations to
+matching URLs *before* they load, so the page never renders and is never
+briefly clickable. This is the WebView2 equivalent of `webview_flutter`'s
+`NavigationDelegate.onNavigationRequest`, with one difference: WebView2's
+underlying `NavigationStarting` event doesn't support deferring its
+decision, so the check happens natively and synchronously against a list of
+URL prefixes rather than through an awaited per-navigation Dart callback.
+
+```dart
+await controller.setNavigationBlocklist(['https://example.com/login']);
+
+controller.onNavigationBlocked.listen((event) {
+  // React to the blocked navigation, e.g. show a native login screen
+  // instead of the page WebView2 just cancelled.
+});
+```
+
 ## Limitations
 This plugin provides seamless composition of web-based contents with other Flutter widgets by rendering off-screen.
 
