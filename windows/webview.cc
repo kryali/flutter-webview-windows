@@ -463,6 +463,122 @@ bool Webview::ClearCookies() {
                                               L"{}", nullptr) == S_OK;
 }
 
+namespace {
+wil::com_ptr<ICoreWebView2CookieManager> GetCookieManager(
+    const wil::com_ptr<ICoreWebView2>& webview) {
+  auto webview2 = webview.try_query<ICoreWebView2_2>();
+  if (!webview2) {
+    return nullptr;
+  }
+  wil::com_ptr<ICoreWebView2CookieManager> cookie_manager;
+  webview2->get_CookieManager(&cookie_manager);
+  return cookie_manager;
+}
+}  // namespace
+
+void Webview::SetCookie(const std::string& name, const std::string& value,
+                        const std::string& domain, const std::string& path,
+                        bool secure, bool http_only,
+                        std::optional<double> expires,
+                        SetCookieCallback callback) {
+  if (!IsValid()) {
+    callback(false);
+    return;
+  }
+
+  auto cookie_manager = GetCookieManager(webview_);
+  if (!cookie_manager) {
+    callback(false);
+    return;
+  }
+
+  wil::com_ptr<ICoreWebView2Cookie> cookie;
+  if (FAILED(cookie_manager->CreateCookie(
+          util::Utf16FromUtf8(name).c_str(), util::Utf16FromUtf8(value).c_str(),
+          util::Utf16FromUtf8(domain).c_str(), util::Utf16FromUtf8(path).c_str(),
+          &cookie)) ||
+      !cookie) {
+    callback(false);
+    return;
+  }
+
+  cookie->put_IsHttpOnly(http_only);
+  cookie->put_IsSecure(secure);
+  if (expires.has_value()) {
+    cookie->put_Expires(*expires);
+  }
+
+  callback(SUCCEEDED(cookie_manager->AddOrUpdateCookie(cookie.get())));
+}
+
+void Webview::GetCookies(const std::string& uri, GetCookiesCallback callback) {
+  if (!IsValid()) {
+    callback(false, {});
+    return;
+  }
+
+  auto cookie_manager = GetCookieManager(webview_);
+  if (!cookie_manager) {
+    callback(false, {});
+    return;
+  }
+
+  auto wuri = uri.empty() ? std::wstring() : util::Utf16FromUtf8(uri);
+  if (FAILED(cookie_manager->GetCookies(
+          uri.empty() ? nullptr : wuri.c_str(),
+          Callback<ICoreWebView2GetCookiesCompletedHandler>(
+              [callback](HRESULT result,
+                        ICoreWebView2CookieList* list) -> HRESULT {
+                if (FAILED(result) || !list) {
+                  callback(false, {});
+                  return S_OK;
+                }
+
+                UINT32 count = 0;
+                list->get_Count(&count);
+
+                std::vector<WebviewCookie> cookies;
+                cookies.reserve(count);
+                for (UINT32 i = 0; i < count; i++) {
+                  wil::com_ptr<ICoreWebView2Cookie> cookie;
+                  if (FAILED(list->GetValueAtIndex(i, &cookie)) || !cookie) {
+                    continue;
+                  }
+
+                  wil::unique_cotaskmem_string name, value, domain, path;
+                  cookie->get_Name(&name);
+                  cookie->get_Value(&value);
+                  cookie->get_Domain(&domain);
+                  cookie->get_Path(&path);
+
+                  BOOL http_only = FALSE, secure = FALSE, session = FALSE;
+                  cookie->get_IsHttpOnly(&http_only);
+                  cookie->get_IsSecure(&secure);
+                  cookie->get_IsSession(&session);
+
+                  double expires = 0;
+                  cookie->get_Expires(&expires);
+
+                  cookies.push_back(WebviewCookie{
+                      util::Utf8FromUtf16(name.get()),
+                      util::Utf8FromUtf16(value.get()),
+                      util::Utf8FromUtf16(domain.get()),
+                      util::Utf8FromUtf16(path.get()),
+                      http_only == TRUE,
+                      secure == TRUE,
+                      session == TRUE,
+                      expires,
+                  });
+                }
+
+                callback(true, std::move(cookies));
+                return S_OK;
+              })
+              .Get()))) {
+    callback(false, {});
+  }
+}
+
 bool Webview::ClearCache() {
   if (!IsValid()) {
     return false;

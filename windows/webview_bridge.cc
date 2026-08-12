@@ -37,6 +37,8 @@ constexpr auto kMethodSetVirtualHostNameMapping = "setVirtualHostNameMapping";
 constexpr auto kMethodClearVirtualHostNameMapping =
     "clearVirtualHostNameMapping";
 constexpr auto kMethodClearCookies = "clearCookies";
+constexpr auto kMethodSetCookie = "setCookie";
+constexpr auto kMethodGetCookies = "getCookies";
 constexpr auto kMethodClearCache = "clearCache";
 constexpr auto kMethodSetCacheDisabled = "setCacheDisabled";
 constexpr auto kMethodSetPopupWindowPolicy = "setPopupWindowPolicy";
@@ -647,6 +649,100 @@ void WebviewBridge::HandleMethodCall(
       return result->Success();
     }
     return result->Error(kMethodFailed);
+  }
+
+  // setCookie: {"name": string, "value": string, "domain": string,
+  //             "path": string, "secure": bool, "httpOnly": bool,
+  //             "expires": double (optional, seconds since epoch UTC)}
+  if (method_name.compare(kMethodSetCookie) == 0) {
+    const auto* map = std::get_if<flutter::EncodableMap>(method_call.arguments());
+    if (!map) {
+      return result->Error(kErrorInvalidArgs);
+    }
+
+    const auto name = map->find(flutter::EncodableValue("name"));
+    const auto cookieValue = map->find(flutter::EncodableValue("value"));
+    const auto domain = map->find(flutter::EncodableValue("domain"));
+    const auto path = map->find(flutter::EncodableValue("path"));
+    const auto secure = map->find(flutter::EncodableValue("secure"));
+    const auto httpOnly = map->find(flutter::EncodableValue("httpOnly"));
+
+    if (name != map->end() && cookieValue != map->end() &&
+        domain != map->end() && path != map->end() && secure != map->end() &&
+        httpOnly != map->end()) {
+      const auto nameValue = std::get_if<std::string>(&name->second);
+      const auto cookieValueValue = std::get_if<std::string>(&cookieValue->second);
+      const auto domainValue = std::get_if<std::string>(&domain->second);
+      const auto pathValue = std::get_if<std::string>(&path->second);
+      const auto secureValue = std::get_if<bool>(&secure->second);
+      const auto httpOnlyValue = std::get_if<bool>(&httpOnly->second);
+
+      if (nameValue && cookieValueValue && domainValue && pathValue &&
+          secureValue && httpOnlyValue) {
+        std::optional<double> expires;
+        const auto expiresIt = map->find(flutter::EncodableValue("expires"));
+        if (expiresIt != map->end()) {
+          if (const auto expiresValue = std::get_if<double>(&expiresIt->second)) {
+            expires = *expiresValue;
+          }
+        }
+
+        std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>>
+            shared_result = std::move(result);
+        webview_->SetCookie(*nameValue, *cookieValueValue, *domainValue,
+                            *pathValue, *secureValue, *httpOnlyValue, expires,
+                            [shared_result](bool success) {
+                              if (success) {
+                                shared_result->Success();
+                              } else {
+                                shared_result->Error(
+                                    kMethodFailed, "Setting the cookie failed.");
+                              }
+                            });
+        return;
+      }
+    }
+    return result->Error(kErrorInvalidArgs);
+  }
+
+  // getCookies: string (URL to scope cookies to; empty/null for all cookies)
+  if (method_name.compare(kMethodGetCookies) == 0) {
+    const auto uri = std::get_if<std::string>(method_call.arguments());
+    std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>>
+        shared_result = std::move(result);
+
+    webview_->GetCookies(
+        uri ? *uri : std::string(),
+        [shared_result](bool success, std::vector<WebviewCookie> cookies) {
+          if (!success) {
+            shared_result->Error(kMethodFailed, "Getting cookies failed.");
+            return;
+          }
+          flutter::EncodableList list;
+          list.reserve(cookies.size());
+          for (const auto& cookie : cookies) {
+            list.push_back(flutter::EncodableValue(flutter::EncodableMap{
+                {flutter::EncodableValue("name"),
+                 flutter::EncodableValue(cookie.name)},
+                {flutter::EncodableValue("value"),
+                 flutter::EncodableValue(cookie.value)},
+                {flutter::EncodableValue("domain"),
+                 flutter::EncodableValue(cookie.domain)},
+                {flutter::EncodableValue("path"),
+                 flutter::EncodableValue(cookie.path)},
+                {flutter::EncodableValue("httpOnly"),
+                 flutter::EncodableValue(cookie.http_only)},
+                {flutter::EncodableValue("secure"),
+                 flutter::EncodableValue(cookie.secure)},
+                {flutter::EncodableValue("session"),
+                 flutter::EncodableValue(cookie.session)},
+                {flutter::EncodableValue("expires"),
+                 flutter::EncodableValue(cookie.expires)},
+            }));
+          }
+          shared_result->Success(flutter::EncodableValue(list));
+        });
+    return;
   }
 
   // clearCache

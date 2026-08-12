@@ -7,6 +7,9 @@
 #include <winrt/base.h>
 
 #include <functional>
+#include <optional>
+#include <string>
+#include <vector>
 
 class WebviewHost;
 
@@ -49,6 +52,18 @@ struct WebviewDownloadEvent {
   std::string resultFilePath;
   INT64 bytesReceived;
   INT64 totalBytesToReceive;
+};
+
+struct WebviewCookie {
+  std::string name;
+  std::string value;
+  std::string domain;
+  std::string path;
+  bool http_only;
+  bool secure;
+  bool session;
+  // Seconds since Unix epoch (UTC); meaningless when session is true.
+  double expires;
 };
 
 struct VirtualKeyState {
@@ -124,6 +139,9 @@ class Webview {
   typedef std::function<void(bool, const std::string&)>
       AddScriptToExecuteOnDocumentCreatedCallback;
   typedef std::function<void(bool, const std::string&)> ScriptExecutedCallback;
+  typedef std::function<void(bool)> SetCookieCallback;
+  typedef std::function<void(bool, std::vector<WebviewCookie>)>
+      GetCookiesCallback;
   typedef std::function<void(const std::string&)> WebMessageReceivedCallback;
   typedef std::function<void(WebviewPermissionState state)>
       WebviewPermissionRequestedCompleter;
@@ -163,6 +181,15 @@ class Webview {
                      ScriptExecutedCallback callback);
   bool PostWebMessage(const std::string& json);
   bool ClearCookies();
+  // Uses ICoreWebView2CookieManager (the documented, versioned cookie API)
+  // rather than the DevTools Protocol, which Microsoft does not guarantee
+  // stable across WebView2 releases.
+  void SetCookie(const std::string& name, const std::string& value,
+                 const std::string& domain, const std::string& path,
+                 bool secure, bool http_only, std::optional<double> expires,
+                 SetCookieCallback callback);
+  // uri may be empty to fetch all cookies rather than those for one URL.
+  void GetCookies(const std::string& uri, GetCookiesCallback callback);
   bool ClearCache();
   bool SetCacheDisabled(bool disabled);
   void SetPopupWindowPolicy(WebviewPopupWindowPolicy policy);

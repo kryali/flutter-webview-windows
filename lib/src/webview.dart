@@ -429,6 +429,60 @@ class WebviewController extends ValueNotifier<WebviewValue> {
     return _methodChannel.invokeMethod('clearCookies');
   }
 
+  /// Sets a single browser cookie via WebView2's cookie manager
+  /// (ICoreWebView2CookieManager -- not the DevTools Protocol, which
+  /// Microsoft doesn't guarantee stable across WebView2 releases).
+  /// [expires] is seconds since epoch (UTC); omit for a session cookie.
+  /// Returns whether the browser accepted it.
+  Future<bool> setCookie({
+    required String name,
+    required String cookieValue,
+    required String domain,
+    String path = '/',
+    bool secure = true,
+    bool httpOnly = true,
+    double? expires,
+  }) async {
+    if (_isDisposed) {
+      return false;
+    }
+    assert(value.isInitialized);
+    try {
+      await _methodChannel.invokeMethod('setCookie', <String, dynamic>{
+        'name': name,
+        'value': cookieValue,
+        'domain': domain,
+        'path': path,
+        'secure': secure,
+        'httpOnly': httpOnly,
+        if (expires != null) 'expires': expires,
+      });
+      return true;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// Returns cookies visible to [url] (or every cookie if omitted), each a
+  /// map with name/value/domain/path/httpOnly/secure/session/expires.
+  Future<List<Map<String, dynamic>>> getCookies([String? url]) async {
+    if (_isDisposed) {
+      return [];
+    }
+    assert(value.isInitialized);
+    try {
+      final result =
+          await _methodChannel.invokeMethod<List<dynamic>>('getCookies', url);
+      if (result == null) return [];
+      return result
+          .cast<Map<dynamic, dynamic>>()
+          .map((m) => m.cast<String, dynamic>())
+          .toList();
+    } on PlatformException {
+      return [];
+    }
+  }
+
   /// Clears browser cache.
   Future<void> clearCache() async {
     if (_isDisposed) {
