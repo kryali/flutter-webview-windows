@@ -197,11 +197,16 @@ class Webview {
   bool ClearCache();
   bool SetCacheDisabled(bool disabled);
   void SetPopupWindowPolicy(WebviewPopupWindowPolicy policy);
-  // Cancels (before it ever renders) any navigation whose URL starts with
-  // one of the given prefixes. WebView2's NavigationStarting event doesn't
-  // support deferral, so this decision has to be made synchronously and
-  // natively rather than round-tripped to Dart per navigation.
-  void SetNavigationBlocklist(std::vector<std::string> url_prefixes);
+  // Cancels (before it ever renders) any navigation whose URL either
+  // exactly matches an entry in exact_urls, or starts with an entry in
+  // url_prefixes (each of which must end in '/', so a subtree block like
+  // ".../admin/" can never accidentally match an unrelated URL that merely
+  // starts with the same characters, e.g. ".../administrator"). WebView2's
+  // NavigationStarting event doesn't support deferral, so this decision has
+  // to be made synchronously and natively rather than round-tripped to Dart
+  // per navigation.
+  void SetNavigationBlocklist(std::vector<std::string> exact_urls,
+                              std::vector<std::string> url_prefixes);
   bool SetUserAgent(const std::string& user_agent);
   bool OpenDevTools();
   bool SetBackgroundColor(int32_t color);
@@ -288,7 +293,8 @@ class Webview {
   VirtualKeyState virtual_keys_;
   WebviewPopupWindowPolicy popup_window_policy_ =
       WebviewPopupWindowPolicy::Allow;
-  std::vector<std::string> navigation_blocklist_;
+  std::vector<std::string> navigation_blocklist_exact_urls_;
+  std::vector<std::string> navigation_blocklist_url_prefixes_;
 
   winrt::com_ptr<ABI::Windows::UI::Composition::IVisual> surface_;
   winrt::com_ptr<ABI::Windows::UI::Composition::Desktop::IDesktopWindowTarget>

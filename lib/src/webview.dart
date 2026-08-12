@@ -572,21 +572,35 @@ class WebviewController extends ValueNotifier<WebviewValue> {
         'setPopupWindowPolicy', popupPolicy.index);
   }
 
-  /// Prevents navigations to URLs starting with any of the given
-  /// [urlPrefixes] from ever loading or rendering.
+  /// Prevents matching navigations from ever loading or rendering.
   ///
-  /// Matched navigations are cancelled by WebView2 before they start, since
-  /// its `NavigationStarting` event doesn't support deferring the decision
+  /// [exactUrls] are blocked only on an exact match. [urlPrefixes] block an
+  /// entire subtree and must each end in `/`, so the match is unambiguous:
+  /// e.g. `'https://example.com/admin/'` blocks everything under `/admin/`
+  /// without also matching an unrelated path like `/administrator`. This
+  /// distinction matters because plain substring-prefix matching would
+  /// otherwise make an exact-match URL like `'https://example.com/login'`
+  /// also match `/login/email/auth` or `/login/sms/verify` -- use
+  /// [exactUrls] for that case instead.
+  ///
+  /// Matches are cancelled by WebView2 before they start, since its
+  /// `NavigationStarting` event doesn't support deferring the decision
   /// (unlike e.g. permission requests), so the check happens natively and
   /// synchronously rather than round-tripping to Dart for each navigation.
   /// Listen to [onNavigationBlocked] to react afterwards, e.g. to show a
   /// native replacement screen.
-  Future<void> setNavigationBlocklist(List<String> urlPrefixes) async {
+  Future<void> setNavigationBlocklist({
+    List<String> exactUrls = const [],
+    List<String> urlPrefixes = const [],
+  }) async {
     if (_isDisposed) {
       return;
     }
     assert(value.isInitialized);
-    return _methodChannel.invokeMethod('setNavigationBlocklist', urlPrefixes);
+    return _methodChannel.invokeMethod('setNavigationBlocklist', {
+      'exactUrls': exactUrls,
+      'urlPrefixes': urlPrefixes,
+    });
   }
 
   /// Suspends the web view.

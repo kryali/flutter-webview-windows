@@ -67,6 +67,28 @@ static const std::optional<std::pair<double, double>> GetPointFromArgs(
   return std::make_pair(*x, *y);
 }
 
+static const std::optional<std::vector<std::string>> GetStringListFromMap(
+    const flutter::EncodableMap& map, const std::string& key) {
+  const auto it = map.find(flutter::EncodableValue(key));
+  if (it == map.end()) {
+    return std::vector<std::string>();
+  }
+  const auto* list = std::get_if<flutter::EncodableList>(&it->second);
+  if (!list) {
+    return std::nullopt;
+  }
+  std::vector<std::string> values;
+  values.reserve(list->size());
+  for (const auto& value : *list) {
+    const auto str = std::get_if<std::string>(&value);
+    if (!str) {
+      return std::nullopt;
+    }
+    values.push_back(*str);
+  }
+  return values;
+}
+
 static const std::optional<std::tuple<double, double, double>>
 GetPointAndScaleFactorFromArgs(const flutter::EncodableValue* args) {
   const flutter::EncodableList* list =
@@ -801,25 +823,23 @@ void WebviewBridge::HandleMethodCall(
     return result->Error(kErrorInvalidArgs);
   }
 
-  // setNavigationBlocklist: List<String> (URL prefixes to cancel before load)
+  // setNavigationBlocklist: {"exactUrls": List<String>,
+  //                          "urlPrefixes": List<String>}
   if (method_name.compare(kMethodSetNavigationBlocklist) == 0) {
-    const flutter::EncodableList* list =
-        std::get_if<flutter::EncodableList>(method_call.arguments());
-    if (!list) {
+    const auto* map =
+        std::get_if<flutter::EncodableMap>(method_call.arguments());
+    if (!map) {
       return result->Error(kErrorInvalidArgs);
     }
 
-    std::vector<std::string> prefixes;
-    prefixes.reserve(list->size());
-    for (const auto& value : *list) {
-      const auto prefix = std::get_if<std::string>(&value);
-      if (!prefix) {
-        return result->Error(kErrorInvalidArgs);
-      }
-      prefixes.push_back(*prefix);
+    auto exact_urls = GetStringListFromMap(*map, "exactUrls");
+    auto url_prefixes = GetStringListFromMap(*map, "urlPrefixes");
+    if (!exact_urls || !url_prefixes) {
+      return result->Error(kErrorInvalidArgs);
     }
 
-    webview_->SetNavigationBlocklist(std::move(prefixes));
+    webview_->SetNavigationBlocklist(std::move(*exact_urls),
+                                     std::move(*url_prefixes));
     return result->Success();
   }
 

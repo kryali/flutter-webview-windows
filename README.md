@@ -30,11 +30,19 @@ matching URLs *before* they load, so the page never renders and is never
 briefly clickable. This is the WebView2 equivalent of `webview_flutter`'s
 `NavigationDelegate.onNavigationRequest`, with one difference: WebView2's
 underlying `NavigationStarting` event doesn't support deferring its
-decision, so the check happens natively and synchronously against a list of
-URL prefixes rather than through an awaited per-navigation Dart callback.
+decision, so the check happens natively and synchronously rather than
+through an awaited per-navigation Dart callback.
+
+Pass `exactUrls` for URLs that should be blocked only on an exact match, and
+`urlPrefixes` (each ending in `/`) for whole subtrees -- keeping the two
+separate avoids a plain prefix match on `.../login` also catching an
+unrelated page like `.../login/email/auth`.
 
 ```dart
-await controller.setNavigationBlocklist(['https://example.com/login']);
+await controller.setNavigationBlocklist(
+  exactUrls: ['https://example.com/login'],
+  urlPrefixes: ['https://example.com/admin/'],
+);
 
 controller.onNavigationBlocked.listen((event) {
   // React to the blocked navigation, e.g. show a native login screen

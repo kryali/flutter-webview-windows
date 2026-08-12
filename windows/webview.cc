@@ -345,7 +345,8 @@ void Webview::RegisterEventHandlers() {
       Callback<ICoreWebView2NavigationStartingEventHandler>(
           [this](ICoreWebView2* sender,
                  ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
-            if (navigation_blocklist_.empty()) {
+            if (navigation_blocklist_exact_urls_.empty() &&
+                navigation_blocklist_url_prefixes_.empty()) {
               return S_OK;
             }
 
@@ -356,8 +357,11 @@ void Webview::RegisterEventHandlers() {
             const std::string uri = util::Utf8FromUtf16(wuri.get());
 
             const bool blocked =
-                std::any_of(navigation_blocklist_.begin(),
-                            navigation_blocklist_.end(),
+                std::find(navigation_blocklist_exact_urls_.begin(),
+                          navigation_blocklist_exact_urls_.end(),
+                          uri) != navigation_blocklist_exact_urls_.end() ||
+                std::any_of(navigation_blocklist_url_prefixes_.begin(),
+                            navigation_blocklist_url_prefixes_.end(),
                             [&uri](const std::string& prefix) {
                               return uri.compare(0, prefix.size(), prefix) ==
                                      0;
@@ -644,8 +648,10 @@ void Webview::SetPopupWindowPolicy(WebviewPopupWindowPolicy policy) {
   popup_window_policy_ = policy;
 }
 
-void Webview::SetNavigationBlocklist(std::vector<std::string> url_prefixes) {
-  navigation_blocklist_ = std::move(url_prefixes);
+void Webview::SetNavigationBlocklist(std::vector<std::string> exact_urls,
+                                     std::vector<std::string> url_prefixes) {
+  navigation_blocklist_exact_urls_ = std::move(exact_urls);
+  navigation_blocklist_url_prefixes_ = std::move(url_prefixes);
 }
 
 bool Webview::SetUserAgent(const std::string& user_agent) {
