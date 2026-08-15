@@ -55,6 +55,212 @@ inline COREWEBVIEW2_PERMISSION_STATE WebViewPermissionStateToCW2PermissionState(
   }
 }
 
+constexpr wchar_t kPopupWindowClassName[] = L"FlutterWebviewPopupWindow";
+
+// Resource ID of IDI_APP_ICON in the Flutter Windows app template's
+// Runner.rc/resource.h. This plugin builds as its own DLL (see
+// webview_windows/CMakeLists.txt: add_library(... SHARED ...)), so it can't
+// #include the host app's generated resource.h. GetModuleHandle(nullptr)
+// still resolves to the hosting .exe regardless of which DLL calls it,
+// so loading this resource ID from that module picks up the app's own
+// icon rather than anything bundled with the plugin -- as long as the host
+// app kept the template's default resource ID. Falls back to a system icon
+// if that lookup fails (e.g. a customized Runner.rc using a different ID).
+constexpr int kAppIconResourceId = 101;
+
+// Hosts a WebView2 popup (from window.open()) in a native top-level window
+// owned by the host app -- giving it the app's icon, taskbar grouping, and
+// the ability to take foreground focus -- instead of falling back to
+// WebView2's own opaque, unhandled-popup window. Deletes itself once its
+// HWND is destroyed.
+class PopupWindow {
+ public:
+  static void Create(ICoreWebView2Environment3* environment,
+                      ICoreWebView2NewWindowRequestedEventArgs* args,
+                      wil::com_ptr<ICoreWebView2Deferral> deferral) {
+    auto* popup = new PopupWindow();
+    popup->Initialize(environment, args, std::move(deferral));
+  }
+
+ private:
+  HWND hwnd_ = nullptr;
+  wil::com_ptr<ICoreWebView2Controller> controller_;
+
+  static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
+                                  LPARAM lparam) {
+    if (message == WM_NCCREATE) {
+      auto* create_struct = reinterpret_cast<CREATESTRUCT*>(lparam);
+      SetWindowLongPtr(
+          hwnd, GWLP_USERDATA,
+          reinterpret_cast<LONG_PTR>(create_struct->lpCreateParams));
+      return DefWindowProc(hwnd, message, wparam, lparam);
+    }
+
+    auto* self =
+        reinterpret_cast<PopupWindow*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+    if (self) {
+      switch (message) {
+        case WM_SIZE:
+          if (self->controller_) {
+            RECT bounds;
+            GetClientRect(hwnd, &bounds);
+            self->controller_->put_Bounds(bounds);
+          }
+          return 0;
+        case WM_DESTROY:
+          if (self->controller_) {
+            self->controller_->Close();
+            self->controller_ = nullptr;
+          }
+          self->hwnd_ = nullptr;
+          delete self;
+          return 0;
+      }
+    }
+
+    return DefWindowProc(hwnd, message, wparam, lparam);
+  }
+
+  static void EnsureWindowClassRegistered() {
+    static bool registered = false;
+    if (registered) {
+      return;
+    }
+    WNDCLASS window_class{};
+    window_class.lpfnWndProc = WndProc;
+    window_class.hInstance = GetModuleHandle(nullptr);
+    window_class.lpszClassName = kPopupWindowClassName;
+    window_class.hCursor = LoadCursor(nullptr, IDC_ARROW);
+    RegisterClass(&window_class);
+    registered = true;
+  }
+
+  void Initialize(ICoreWebView2Environment3* environment,
+                  ICoreWebView2NewWindowRequestedEventArgs* args,
+                  wil::com_ptr<ICoreWebView2Deferral> deferral) {
+    EnsureWindowClassRegistered();
+
+    // ICoreWebView2WindowFeatures reports size/position in DIPs (like the
+    // CSS pixels window.open() was called with), not physical pixels.
+    int width_dip = 1024;
+    int height_dip = 768;
+    bool has_position = false;
+    int x_dip = 0;
+    int y_dip = 0;
+
+    wil::com_ptr<ICoreWebView2WindowFeatures> features;
+    if (SUCCEEDED(args->get_WindowFeatures(features.put())) && features) {
+      BOOL has_size = FALSE;
+      if (SUCCEEDED(features->get_HasSize(&has_size)) && has_size) {
+        UINT32 w = 0, h = 0;
+        if (SUCCEEDED(features->get_Width(&w)) && w > 0) {
+          width_dip = static_cast<int>(w);
+        }
+        if (SUCCEEDED(features->get_Height(&h)) && h > 0) {
+          height_dip = static_cast<int>(h);
+        }
+      }
+      BOOL raw_has_position = FALSE;
+      if (SUCCEEDED(features->get_HasPosition(&raw_has_position)) &&
+          raw_has_position) {
+        UINT32 left = 0, top = 0;
+        if (SUCCEEDED(features->get_Left(&left)) &&
+            SUCCEEDED(features->get_Top(&top))) {
+          x_dip = static_cast<int>(left);
+          y_dip = static_cast<int>(top);
+          has_position = true;
+        }
+      }
+    }
+
+    // Create at the raw (unscaled) DIP values first -- CreateWindowEx needs
+    // a real HWND before GetDpiForWindow can tell us which monitor (and
+    // therefore which DPI) it actually landed on. The window isn't shown
+    // until later, so resizing it to the correctly-scaled physical size
+    // right after creation causes no visible flicker.
+    hwnd_ = CreateWindowEx(0, kPopupWindowClassName, L"", WS_OVERLAPPEDWINDOW,
+                           has_position ? x_dip : CW_USEDEFAULT,
+                           has_position ? y_dip : CW_USEDEFAULT, width_dip,
+                           height_dip, nullptr, nullptr,
+                           GetModuleHandle(nullptr), this);
+
+    if (!hwnd_) {
+      deferral->Complete();
+      delete this;
+      return;
+    }
+
+    // Resize from the placeholder DIP-sized rect above to the correctly
+    // scaled physical size, now that GetDpiForWindow can tell us which
+    // monitor (and therefore which DPI) the window actually landed on.
+    UINT dpi = GetDpiForWindow(hwnd_);
+    float scale = dpi / 96.0f;
+    if (scale != 1.0f) {
+      RECT current;
+      GetWindowRect(hwnd_, &current);
+      int px_x = has_position ? static_cast<int>(x_dip * scale) : current.left;
+      int px_y = has_position ? static_cast<int>(y_dip * scale) : current.top;
+      int px_width = static_cast<int>(width_dip * scale);
+      int px_height = static_cast<int>(height_dip * scale);
+      SetWindowPos(hwnd_, nullptr, px_x, px_y, px_width, px_height,
+                  SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+
+    HICON icon = LoadIcon(GetModuleHandle(nullptr),
+                          MAKEINTRESOURCE(kAppIconResourceId));
+    if (!icon) {
+      icon = LoadIcon(nullptr, IDI_APPLICATION);
+    }
+    if (icon) {
+      SendMessage(hwnd_, WM_SETICON, ICON_SMALL,
+                 reinterpret_cast<LPARAM>(icon));
+      SendMessage(hwnd_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
+    }
+
+    HWND hwnd = hwnd_;
+    environment->CreateCoreWebView2Controller(
+        hwnd_,
+        Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
+            [this, hwnd, args, deferral = std::move(deferral)](
+                HRESULT result,
+                ICoreWebView2Controller* controller) -> HRESULT {
+              if (FAILED(result) || !controller) {
+                DestroyWindow(hwnd);
+                deferral->Complete();
+                return S_OK;
+              }
+
+              controller_ = controller;
+
+              RECT bounds;
+              GetClientRect(hwnd, &bounds);
+              controller_->put_Bounds(bounds);
+
+              wil::com_ptr<ICoreWebView2> new_webview;
+              controller_->get_CoreWebView2(new_webview.put());
+              if (new_webview) {
+                args->put_NewWindow(new_webview.get());
+              }
+              args->put_Handled(TRUE);
+
+              controller_->put_IsVisible(TRUE);
+              ShowWindow(hwnd, SW_SHOW);
+              // Best-effort: Windows' anti-focus-stealing heuristics are
+              // most permissive close to the user gesture that triggered
+              // window.open(). Because controller creation is async, this
+              // foreground grab may still be silently ignored by the OS
+              // even though every call here succeeds -- that's a real
+              // caveat, not a bug in this code.
+              SetForegroundWindow(hwnd);
+              BringWindowToTop(hwnd);
+
+              deferral->Complete();
+              return S_OK;
+            })
+            .Get());
+  }
+};
+
 }  // namespace
 
 Webview::Webview(
@@ -398,6 +604,15 @@ void Webview::RegisterEventHandlers() {
                 args->put_NewWindow(webview_.get());
                 args->put_Handled(TRUE);
                 break;
+              case WebviewPopupWindowPolicy::Allow: {
+                wil::com_ptr<ICoreWebView2Deferral> deferral;
+                if (SUCCEEDED(args->GetDeferral(deferral.put())) &&
+                    deferral) {
+                  PopupWindow::Create(host_->environment(), args,
+                                      std::move(deferral));
+                }
+                break;
+              }
             }
 
             return S_OK;

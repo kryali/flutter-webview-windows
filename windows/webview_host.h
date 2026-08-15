@@ -52,6 +52,10 @@ class WebviewHost {
     return compositor_;
   }
 
+  // Same environment used to create every Webview's controller, so popup
+  // windows created by Webview share cookies/session with their opener.
+  ICoreWebView2Environment3* environment() const { return webview_env_.get(); }
+
  private:
   winrt::com_ptr<ABI::Windows::UI::Composition::ICompositor> compositor_;
   wil::com_ptr<ICoreWebView2Environment3> webview_env_;
