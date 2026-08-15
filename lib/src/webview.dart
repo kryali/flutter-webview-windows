@@ -562,14 +562,36 @@ class WebviewController extends ValueNotifier<WebviewValue> {
   }
 
   /// Sets the [WebviewPopupWindowPolicy].
+  ///
+  /// Under [WebviewPopupWindowPolicy.allow], popups are hosted in a native
+  /// window this app owns (its own icon, taskbar entry, and focus), rather
+  /// than WebView2's own default popup window.
+  ///
+  /// [showAddressBar] controls whether that window shows a read-only
+  /// address bar with the popup's current URL; it defaults to `true`, since
+  /// most callers expect the browser-chrome look WebView2's own default
+  /// popup used to give them for free.
+  ///
+  /// [addressBarHiddenUrlPatterns] are regexes checked against each popup's
+  /// target URL; any match hides the address bar for that popup regardless
+  /// of [showAddressBar], so a single call can show it by default while
+  /// suppressing it for specific flows (e.g. an OAuth domain) or vice versa.
+  /// Matching happens natively and synchronously when the popup is
+  /// requested, so it adds no round trip to Dart.
   Future<void> setPopupWindowPolicy(
-      WebviewPopupWindowPolicy popupPolicy) async {
+    WebviewPopupWindowPolicy popupPolicy, {
+    bool showAddressBar = true,
+    List<String> addressBarHiddenUrlPatterns = const [],
+  }) async {
     if (_isDisposed) {
       return;
     }
     assert(value.isInitialized);
-    return _methodChannel.invokeMethod(
-        'setPopupWindowPolicy', popupPolicy.index);
+    return _methodChannel.invokeMethod('setPopupWindowPolicy', {
+      'policy': popupPolicy.index,
+      'showAddressBar': showAddressBar,
+      'addressBarHiddenUrlPatterns': addressBarHiddenUrlPatterns,
+    });
   }
 
   /// Prevents matching navigations from ever loading or rendering.

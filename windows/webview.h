@@ -196,7 +196,13 @@ class Webview {
   void GetCookies(const std::string& uri, GetCookiesCallback callback);
   bool ClearCache();
   bool SetCacheDisabled(bool disabled);
-  void SetPopupWindowPolicy(WebviewPopupWindowPolicy policy);
+  // show_address_bar is the default for popups opened under
+  // WebviewPopupWindowPolicy::Allow; address_bar_hidden_url_patterns are
+  // regexes checked against each popup's target URL, and override
+  // show_address_bar to false for any popup that matches one.
+  void SetPopupWindowPolicy(
+      WebviewPopupWindowPolicy policy, bool show_address_bar,
+      std::vector<std::string> address_bar_hidden_url_patterns);
   // Cancels (before it ever renders) any navigation whose URL either
   // exactly matches an entry in exact_urls, or starts with an entry in
   // url_prefixes (each of which must end in '/', so a subtree block like
@@ -293,6 +299,8 @@ class Webview {
   VirtualKeyState virtual_keys_;
   WebviewPopupWindowPolicy popup_window_policy_ =
       WebviewPopupWindowPolicy::Allow;
+  bool popup_window_show_address_bar_ = true;
+  std::vector<std::string> popup_window_address_bar_hidden_url_patterns_;
   std::vector<std::string> navigation_blocklist_exact_urls_;
   std::vector<std::string> navigation_blocklist_url_prefixes_;
 

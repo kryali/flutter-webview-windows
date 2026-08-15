@@ -1,14 +1,23 @@
 #include "webview.h"
 
+#include <dwmapi.h>
+#include <richedit.h>
 #include <wrl.h>
 
 #include <algorithm>
 #include <format>
 #include <iostream>
+#include <regex>
 
 #include "util/composition.desktop.interop.h"
 #include "util/string_converter.h"
 #include "webview_host.h"
+
+#pragma comment(lib, "dwmapi.lib")
+
+#ifndef DWMWA_USE_IMMERSIVE_DARK_MODE
+#define DWMWA_USE_IMMERSIVE_DARK_MODE 20
+#endif
 
 using namespace Microsoft::WRL;
 
@@ -55,7 +64,46 @@ inline COREWEBVIEW2_PERMISSION_STATE WebViewPermissionStateToCW2PermissionState(
   }
 }
 
+// Mirrors WebView2's own default popup window, which follows the OS theme
+// rather than a fixed light/dark look.
+bool IsSystemDarkMode() {
+  DWORD value = 1;
+  DWORD size = sizeof(value);
+  LSTATUS status = RegGetValueW(
+      HKEY_CURRENT_USER,
+      L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+      L"AppsUseLightTheme", RRF_RT_REG_DWORD, nullptr, &value, &size);
+  return status == ERROR_SUCCESS && value == 0;
+}
+
+// Regex-matches value against each of patterns, ignoring (rather than
+// failing on) any pattern that isn't valid regex syntax, since these come
+// from app-supplied Dart strings that could be malformed.
+bool MatchesAnyPattern(const std::string& value,
+                       const std::vector<std::string>& patterns) {
+  for (const auto& pattern : patterns) {
+    try {
+      if (std::regex_search(value, std::regex(pattern))) {
+        return true;
+      }
+    } catch (const std::regex_error&) {
+    }
+  }
+  return false;
+}
+
 constexpr wchar_t kPopupWindowClassName[] = L"FlutterWebviewPopupWindow";
+
+constexpr int kAddressBarHeightDip = 31;
+constexpr int kAddressBarMarginDip = 8;
+constexpr int kAddressBarFontPointSize = 10;
+// Segoe MDL2 Assets glyphs read visually larger than text at the same
+// point size, so the lock glyph uses a smaller size to look proportionate.
+constexpr int kAddressBarIconPointSize = 8;
+// "Lock" glyph (U+E72E), Segoe MDL2 Assets -- matches the padlock
+// Chromium's own omnibox shows for https:// URLs.
+constexpr wchar_t kLockGlyph = L'\uE72E';
+constexpr wchar_t kIconFontName[] = L"Segoe MDL2 Assets";
 
 // Resource ID of IDI_APP_ICON in the Flutter Windows app template's
 // Runner.rc/resource.h. This plugin builds as its own DLL (see
@@ -77,14 +125,152 @@ class PopupWindow {
  public:
   static void Create(ICoreWebView2Environment3* environment,
                       ICoreWebView2NewWindowRequestedEventArgs* args,
+                      bool show_address_bar,
                       wil::com_ptr<ICoreWebView2Deferral> deferral) {
     auto* popup = new PopupWindow();
-    popup->Initialize(environment, args, std::move(deferral));
+    popup->Initialize(environment, args, show_address_bar,
+                      std::move(deferral));
   }
 
  private:
   HWND hwnd_ = nullptr;
+  HWND address_bar_hwnd_ = nullptr;
+  HBRUSH address_bar_border_brush_ = nullptr;
+  bool show_address_bar_ = true;
+  bool dark_mode_ = false;
+  float scale_ = 1.0f;
+  wchar_t ui_font_name_[LF_FACESIZE] = L"Segoe UI";
   wil::com_ptr<ICoreWebView2Controller> controller_;
+
+  // Height, in pixels, of a single line of address-bar-sized text -- used
+  // to center it (and the lock glyph) vertically within the bar, since
+  // RichEdit top-aligns by default instead of centering the way a plain
+  // single-line EDIT control would.
+  int MeasureAddressBarTextHeightPx() {
+    HDC hdc = GetDC(address_bar_hwnd_);
+    int dpi = static_cast<int>(scale_ * 96.0f + 0.5f);
+    HFONT font = CreateFontW(
+        -MulDiv(kAddressBarFontPointSize, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE,
+        FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+        CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+        ui_font_name_);
+    HFONT old_font = static_cast<HFONT>(SelectObject(hdc, font));
+    TEXTMETRIC metrics;
+    GetTextMetrics(hdc, &metrics);
+    SelectObject(hdc, old_font);
+    DeleteObject(font);
+    ReleaseDC(address_bar_hwnd_, hdc);
+    return metrics.tmHeight;
+  }
+
+  // Lays out the (optional) address bar strip and the WebView2 content
+  // beneath it to fill the rest of the client area. Safe to call before
+  // controller_ exists (e.g. from the initial WM_SIZE during creation).
+  void LayoutChildren() {
+    RECT client;
+    GetClientRect(hwnd_, &client);
+    int bar_height =
+        show_address_bar_ ? static_cast<int>(kAddressBarHeightDip * scale_)
+                          : 0;
+    if (address_bar_hwnd_) {
+      // A 1px inset top and bottom leaves room for WM_ERASEBKGND to paint
+      // a border line on each edge of the bar (RichEdit has no border
+      // style of its own that looks right here).
+      int border = (std::max)(1, static_cast<int>(scale_ + 0.5f));
+      int inner_height = (std::max)(0, bar_height - 2 * border);
+      MoveWindow(address_bar_hwnd_, 0, border, client.right - client.left,
+                inner_height, TRUE);
+
+      int margin = static_cast<int>(kAddressBarMarginDip * scale_);
+      int top_inset =
+          (std::max)(0, (inner_height - MeasureAddressBarTextHeightPx()) / 2);
+      RECT format_rect{margin, top_inset,
+                       (client.right - client.left) - margin, inner_height};
+      SendMessage(address_bar_hwnd_, EM_SETRECT, 0,
+                 reinterpret_cast<LPARAM>(&format_rect));
+    }
+    if (controller_) {
+      RECT bounds{0, bar_height, client.right - client.left,
+                 client.bottom - client.top};
+      controller_->put_Bounds(bounds);
+    }
+  }
+
+  // Appends text to the end of the address bar with its own color/font run,
+  // leaving any previously-appended runs untouched. Used to give the
+  // domain, the rest of the URL, and the lock glyph each their own style,
+  // mirroring Chromium's own omnibox convention of de-emphasizing
+  // everything except the host.
+  void AppendAddressBarRun(const std::wstring& text, COLORREF color,
+                           const wchar_t* font_name, int point_size) {
+    if (text.empty()) {
+      return;
+    }
+    int start =
+        static_cast<int>(SendMessage(address_bar_hwnd_, WM_GETTEXTLENGTH, 0, 0));
+    SendMessage(address_bar_hwnd_, EM_SETSEL, start, start);
+    SendMessage(address_bar_hwnd_, EM_REPLACESEL, FALSE,
+               reinterpret_cast<LPARAM>(text.c_str()));
+    int end =
+        static_cast<int>(SendMessage(address_bar_hwnd_, WM_GETTEXTLENGTH, 0, 0));
+    SendMessage(address_bar_hwnd_, EM_SETSEL, start, end);
+
+    CHARFORMAT2W format{};
+    format.cbSize = sizeof(format);
+    format.dwMask = CFM_COLOR | CFM_FACE | CFM_SIZE;
+    format.crTextColor = color;
+    format.yHeight = point_size * 20;  // twips -- already DPI-independent.
+    wcsncpy_s(format.szFaceName, font_name, _TRUNCATE);
+    SendMessage(address_bar_hwnd_, EM_SETCHARFORMAT, SCF_SELECTION,
+               reinterpret_cast<LPARAM>(&format));
+  }
+
+  // Replaces the address bar's content with url, broken into a padlock
+  // glyph (https:// only), a dimmed scheme, a highlighted host, and a
+  // dimmed remainder -- the same visual hierarchy Chromium's own omnibox
+  // uses to make the part that actually identifies the site stand out.
+  void UpdateAddressBarText(const std::wstring& url) {
+    if (!address_bar_hwnd_) {
+      return;
+    }
+
+    SetWindowTextW(address_bar_hwnd_, L"");
+
+    const bool is_https = url.compare(0, 8, L"https://") == 0;
+    const COLORREF dim_color =
+        dark_mode_ ? RGB(0x9E, 0x9E, 0x9E) : RGB(0x6E, 0x6E, 0x6E);
+    const COLORREF bright_color =
+        dark_mode_ ? RGB(0xE8, 0xE8, 0xE8) : RGB(0x1A, 0x1A, 0x1A);
+
+    if (is_https) {
+      AppendAddressBarRun(std::wstring(1, kLockGlyph) + L"  ", dim_color,
+                          kIconFontName, kAddressBarIconPointSize);
+    }
+
+    const size_t scheme_end = url.find(L"://");
+    if (scheme_end == std::wstring::npos) {
+      AppendAddressBarRun(url, bright_color, ui_font_name_,
+                          kAddressBarFontPointSize);
+    } else {
+      const std::wstring scheme = url.substr(0, scheme_end + 3);
+      const size_t host_end = url.find_first_of(L"/?#", scheme_end + 3);
+      const std::wstring host =
+          host_end == std::wstring::npos
+              ? url.substr(scheme_end + 3)
+              : url.substr(scheme_end + 3, host_end - (scheme_end + 3));
+      const std::wstring rest =
+          host_end == std::wstring::npos ? L"" : url.substr(host_end);
+
+      AppendAddressBarRun(scheme, dim_color, ui_font_name_,
+                          kAddressBarFontPointSize);
+      AppendAddressBarRun(host, bright_color, ui_font_name_,
+                          kAddressBarFontPointSize);
+      AppendAddressBarRun(rest, dim_color, ui_font_name_,
+                          kAddressBarFontPointSize);
+    }
+
+    SendMessage(address_bar_hwnd_, EM_SETSEL, 0, 0);
+  }
 
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT message, WPARAM wparam,
                                   LPARAM lparam) {
@@ -101,16 +287,28 @@ class PopupWindow {
     if (self) {
       switch (message) {
         case WM_SIZE:
-          if (self->controller_) {
-            RECT bounds;
-            GetClientRect(hwnd, &bounds);
-            self->controller_->put_Bounds(bounds);
-          }
+          self->LayoutChildren();
           return 0;
+        case WM_ERASEBKGND:
+          // Paints a border line along the top and bottom of the address
+          // bar strip -- RichEdit has no border style that looks right
+          // here, so LayoutChildren() insets the control by 1px on each
+          // edge and lets this show through in the gap.
+          if (self->show_address_bar_ && self->address_bar_border_brush_) {
+            RECT client;
+            GetClientRect(hwnd, &client);
+            FillRect(reinterpret_cast<HDC>(wparam), &client,
+                     self->address_bar_border_brush_);
+            return 1;
+          }
+          break;
         case WM_DESTROY:
           if (self->controller_) {
             self->controller_->Close();
             self->controller_ = nullptr;
+          }
+          if (self->address_bar_border_brush_) {
+            DeleteObject(self->address_bar_border_brush_);
           }
           self->hwnd_ = nullptr;
           delete self;
@@ -135,10 +333,24 @@ class PopupWindow {
     registered = true;
   }
 
+  // Registers the RICHEDIT50W window class (used for the address bar,
+  // which needs per-run text coloring an EDIT control can't do).
+  static void EnsureRichEditLoaded() {
+    static bool loaded = false;
+    if (loaded) {
+      return;
+    }
+    LoadLibrary(L"Msftedit.dll");
+    loaded = true;
+  }
+
   void Initialize(ICoreWebView2Environment3* environment,
                   ICoreWebView2NewWindowRequestedEventArgs* args,
+                  bool show_address_bar,
                   wil::com_ptr<ICoreWebView2Deferral> deferral) {
     EnsureWindowClassRegistered();
+    show_address_bar_ = show_address_bar;
+    dark_mode_ = IsSystemDarkMode();
 
     // ICoreWebView2WindowFeatures reports size in DIPs (like the CSS
     // pixels window.open() was called with), not physical pixels.
@@ -183,14 +395,20 @@ class PopupWindow {
       return;
     }
 
+    if (dark_mode_) {
+      BOOL enabled = TRUE;
+      DwmSetWindowAttribute(hwnd_, DWMWA_USE_IMMERSIVE_DARK_MODE, &enabled,
+                            sizeof(enabled));
+    }
+
     // Resize (position untouched) to the correctly scaled physical size,
     // now that GetDpiForWindow can tell us which monitor (and therefore
     // which DPI) the window actually landed on.
     UINT dpi = GetDpiForWindow(hwnd_);
-    float scale = dpi / 96.0f;
-    if (scale != 1.0f) {
-      int px_width = static_cast<int>(width_dip * scale);
-      int px_height = static_cast<int>(height_dip * scale);
+    scale_ = dpi / 96.0f;
+    if (scale_ != 1.0f) {
+      int px_width = static_cast<int>(width_dip * scale_);
+      int px_height = static_cast<int>(height_dip * scale_);
       SetWindowPos(hwnd_, nullptr, 0, 0, px_width, px_height,
                   SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
     }
@@ -204,6 +422,44 @@ class PopupWindow {
       SendMessage(hwnd_, WM_SETICON, ICON_SMALL,
                  reinterpret_cast<LPARAM>(icon));
       SendMessage(hwnd_, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(icon));
+    }
+
+    if (show_address_bar_) {
+      EnsureRichEditLoaded();
+      address_bar_border_brush_ = CreateSolidBrush(
+          dark_mode_ ? RGB(0x45, 0x45, 0x45) : RGB(0xD0, 0xD0, 0xD0));
+
+      // A plain CreateWindowEx("EDIT", ...) defaults to the ancient stock
+      // Win32 UI font, not the Segoe UI used everywhere else in Windows
+      // (including WebView2's own chrome) -- pull the real system message
+      // font instead so this doesn't look out of place.
+      NONCLIENTMETRICS metrics{sizeof(NONCLIENTMETRICS)};
+      if (SystemParametersInfo(SPI_GETNONCLIENTMETRICS, sizeof(metrics),
+                               &metrics, 0)) {
+        wcsncpy_s(ui_font_name_, metrics.lfMessageFont.lfFaceName, _TRUNCATE);
+      }
+
+      // A RichEdit control, not a plain EDIT: needs per-run text coloring
+      // to de-emphasize the scheme/path the way Chromium's own omnibox
+      // does. Still read-only -- an informational display of the current
+      // URL, not a navigable omnibox (no back/forward/reload).
+      address_bar_hwnd_ = CreateWindowEx(
+          0, MSFTEDIT_CLASS, L"",
+          WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_READONLY, 0, 0, 0, 0,
+          hwnd_, nullptr, GetModuleHandle(nullptr), nullptr);
+      if (address_bar_hwnd_) {
+        SendMessage(address_bar_hwnd_, EM_SETBKGNDCOLOR, 0,
+                   dark_mode_ ? RGB(0x2B, 0x2B, 0x2B) : RGB(0xF3, 0xF3, 0xF3));
+
+        // Shows the requested URL immediately; the SourceChanged handler
+        // registered below keeps it in sync with redirects/navigation
+        // once the popup's own webview exists.
+        wil::unique_cotaskmem_string wuri;
+        if (SUCCEEDED(args->get_Uri(&wuri))) {
+          UpdateAddressBarText(wuri.get());
+        }
+      }
+      LayoutChildren();
     }
 
     HWND hwnd = hwnd_;
@@ -220,15 +476,44 @@ class PopupWindow {
               }
 
               controller_ = controller;
-
-              RECT bounds;
-              GetClientRect(hwnd, &bounds);
-              controller_->put_Bounds(bounds);
+              LayoutChildren();
 
               wil::com_ptr<ICoreWebView2> new_webview;
               controller_->get_CoreWebView2(new_webview.put());
               if (new_webview) {
                 args->put_NewWindow(new_webview.get());
+
+                EventRegistrationToken title_token;
+                new_webview->add_DocumentTitleChanged(
+                    Callback<ICoreWebView2DocumentTitleChangedEventHandler>(
+                        [this](ICoreWebView2* sender,
+                              IUnknown* args) -> HRESULT {
+                          LPWSTR wtitle;
+                          if (hwnd_ &&
+                              sender->get_DocumentTitle(&wtitle) == S_OK) {
+                            SetWindowTextW(hwnd_, wtitle);
+                          }
+                          return S_OK;
+                        })
+                        .Get(),
+                    &title_token);
+
+                if (address_bar_hwnd_) {
+                  EventRegistrationToken token;
+                  new_webview->add_SourceChanged(
+                      Callback<ICoreWebView2SourceChangedEventHandler>(
+                          [this](ICoreWebView2* sender,
+                                IUnknown* args) -> HRESULT {
+                            LPWSTR wurl;
+                            if (address_bar_hwnd_ &&
+                                sender->get_Source(&wurl) == S_OK) {
+                              UpdateAddressBarText(wurl);
+                            }
+                            return S_OK;
+                          })
+                          .Get(),
+                      &token);
+                }
               }
               args->put_Handled(TRUE);
 
@@ -597,8 +882,22 @@ void Webview::RegisterEventHandlers() {
                 wil::com_ptr<ICoreWebView2Deferral> deferral;
                 if (SUCCEEDED(args->GetDeferral(deferral.put())) &&
                     deferral) {
+                  bool show_address_bar = popup_window_show_address_bar_;
+                  if (show_address_bar &&
+                      !popup_window_address_bar_hidden_url_patterns_
+                           .empty()) {
+                    wil::unique_cotaskmem_string wuri;
+                    if (SUCCEEDED(args->get_Uri(&wuri))) {
+                      const std::string uri = util::Utf8FromUtf16(wuri.get());
+                      if (MatchesAnyPattern(
+                              uri,
+                              popup_window_address_bar_hidden_url_patterns_)) {
+                        show_address_bar = false;
+                      }
+                    }
+                  }
                   PopupWindow::Create(host_->environment(), args,
-                                      std::move(deferral));
+                                      show_address_bar, std::move(deferral));
                 }
                 break;
               }
@@ -848,8 +1147,13 @@ bool Webview::SetCacheDisabled(bool disabled) {
                                               nullptr) == S_OK;
 }
 
-void Webview::SetPopupWindowPolicy(WebviewPopupWindowPolicy policy) {
+void Webview::SetPopupWindowPolicy(
+    WebviewPopupWindowPolicy policy, bool show_address_bar,
+    std::vector<std::string> address_bar_hidden_url_patterns) {
   popup_window_policy_ = policy;
+  popup_window_show_address_bar_ = show_address_bar;
+  popup_window_address_bar_hidden_url_patterns_ =
+      std::move(address_bar_hidden_url_patterns);
 }
 
 void Webview::SetNavigationBlocklist(std::vector<std::string> exact_urls,

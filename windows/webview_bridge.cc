@@ -803,24 +803,43 @@ void WebviewBridge::HandleMethodCall(
     return result->Error(kErrorInvalidArgs);
   }
 
-  // setPopupWindowPolicy: int
+  // setPopupWindowPolicy: {"policy": int, "showAddressBar": bool,
+  //                         "addressBarHiddenUrlPatterns": List<String>}
   if (method_name.compare(kMethodSetPopupWindowPolicy) == 0) {
-    if (const auto index = std::get_if<int32_t>(method_call.arguments())) {
-      switch (*index) {
-        case 1:
-          webview_->SetPopupWindowPolicy(WebviewPopupWindowPolicy::Deny);
-          break;
-        case 2:
-          webview_->SetPopupWindowPolicy(
-              WebviewPopupWindowPolicy::ShowInSameWindow);
-          break;
-        default:
-          webview_->SetPopupWindowPolicy(WebviewPopupWindowPolicy::Allow);
-          break;
-      }
-      return result->Success();
+    const auto* map = std::get_if<flutter::EncodableMap>(method_call.arguments());
+    if (!map) {
+      return result->Error(kErrorInvalidArgs);
     }
-    return result->Error(kErrorInvalidArgs);
+
+    const auto policy_it = map->find(flutter::EncodableValue("policy"));
+    const auto show_bar_it =
+        map->find(flutter::EncodableValue("showAddressBar"));
+    if (policy_it == map->end() || show_bar_it == map->end()) {
+      return result->Error(kErrorInvalidArgs);
+    }
+    const auto index = std::get_if<int32_t>(&policy_it->second);
+    const auto show_address_bar = std::get_if<bool>(&show_bar_it->second);
+    auto hidden_patterns =
+        GetStringListFromMap(*map, "addressBarHiddenUrlPatterns");
+    if (!index || !show_address_bar || !hidden_patterns) {
+      return result->Error(kErrorInvalidArgs);
+    }
+
+    WebviewPopupWindowPolicy policy;
+    switch (*index) {
+      case 1:
+        policy = WebviewPopupWindowPolicy::Deny;
+        break;
+      case 2:
+        policy = WebviewPopupWindowPolicy::ShowInSameWindow;
+        break;
+      default:
+        policy = WebviewPopupWindowPolicy::Allow;
+        break;
+    }
+    webview_->SetPopupWindowPolicy(policy, *show_address_bar,
+                                   std::move(*hidden_patterns));
+    return result->Success();
   }
 
   // setNavigationBlocklist: {"exactUrls": List<String>,
