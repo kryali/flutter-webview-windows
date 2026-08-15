@@ -140,13 +140,19 @@ class PopupWindow {
                   wil::com_ptr<ICoreWebView2Deferral> deferral) {
     EnsureWindowClassRegistered();
 
-    // ICoreWebView2WindowFeatures reports size/position in DIPs (like the
-    // CSS pixels window.open() was called with), not physical pixels.
+    // ICoreWebView2WindowFeatures reports size in DIPs (like the CSS
+    // pixels window.open() was called with), not physical pixels.
+    //
+    // Position (get_Left/get_Top) is deliberately NOT honored: those
+    // coordinates are in the opener page's DIP space, and correctly
+    // placing a physical-pixel window from them requires knowing which
+    // monitor's DPI that space was anchored to -- information we don't
+    // reliably have here. Guessing wrong can place the window entirely
+    // outside every monitor's bounds (invisible, but still alive and in
+    // the taskbar). CW_USEDEFAULT is guaranteed by Windows to land
+    // on-screen, so position hints are ignored in favor of that.
     int width_dip = 1024;
     int height_dip = 768;
-    bool has_position = false;
-    int x_dip = 0;
-    int y_dip = 0;
 
     wil::com_ptr<ICoreWebView2WindowFeatures> features;
     if (SUCCEEDED(args->get_WindowFeatures(features.put())) && features) {
@@ -160,29 +166,16 @@ class PopupWindow {
           height_dip = static_cast<int>(h);
         }
       }
-      BOOL raw_has_position = FALSE;
-      if (SUCCEEDED(features->get_HasPosition(&raw_has_position)) &&
-          raw_has_position) {
-        UINT32 left = 0, top = 0;
-        if (SUCCEEDED(features->get_Left(&left)) &&
-            SUCCEEDED(features->get_Top(&top))) {
-          x_dip = static_cast<int>(left);
-          y_dip = static_cast<int>(top);
-          has_position = true;
-        }
-      }
     }
 
-    // Create at the raw (unscaled) DIP values first -- CreateWindowEx needs
+    // Create at the raw (unscaled) DIP size first -- CreateWindowEx needs
     // a real HWND before GetDpiForWindow can tell us which monitor (and
     // therefore which DPI) it actually landed on. The window isn't shown
     // until later, so resizing it to the correctly-scaled physical size
     // right after creation causes no visible flicker.
     hwnd_ = CreateWindowEx(0, kPopupWindowClassName, L"", WS_OVERLAPPEDWINDOW,
-                           has_position ? x_dip : CW_USEDEFAULT,
-                           has_position ? y_dip : CW_USEDEFAULT, width_dip,
-                           height_dip, nullptr, nullptr,
-                           GetModuleHandle(nullptr), this);
+                           CW_USEDEFAULT, CW_USEDEFAULT, width_dip, height_dip,
+                           nullptr, nullptr, GetModuleHandle(nullptr), this);
 
     if (!hwnd_) {
       deferral->Complete();
@@ -190,20 +183,16 @@ class PopupWindow {
       return;
     }
 
-    // Resize from the placeholder DIP-sized rect above to the correctly
-    // scaled physical size, now that GetDpiForWindow can tell us which
-    // monitor (and therefore which DPI) the window actually landed on.
+    // Resize (position untouched) to the correctly scaled physical size,
+    // now that GetDpiForWindow can tell us which monitor (and therefore
+    // which DPI) the window actually landed on.
     UINT dpi = GetDpiForWindow(hwnd_);
     float scale = dpi / 96.0f;
     if (scale != 1.0f) {
-      RECT current;
-      GetWindowRect(hwnd_, &current);
-      int px_x = has_position ? static_cast<int>(x_dip * scale) : current.left;
-      int px_y = has_position ? static_cast<int>(y_dip * scale) : current.top;
       int px_width = static_cast<int>(width_dip * scale);
       int px_height = static_cast<int>(height_dip * scale);
-      SetWindowPos(hwnd_, nullptr, px_x, px_y, px_width, px_height,
-                  SWP_NOZORDER | SWP_NOACTIVATE);
+      SetWindowPos(hwnd_, nullptr, 0, 0, px_width, px_height,
+                  SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE);
     }
 
     HICON icon = LoadIcon(GetModuleHandle(nullptr),
