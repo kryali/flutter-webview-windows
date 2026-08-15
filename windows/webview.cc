@@ -1586,4 +1586,4 @@ void Webview::UpdateDownloadProgress(ICoreWebView2DownloadOperation* download) {
           })
           .Get(),
       &event_registrations_.download_state_changed_token_);
-}
+}
