@@ -235,6 +235,7 @@ class Webview {
                               std::vector<std::string> url_prefixes);
   void SetInterceptedAcceleratorKeys(
       std::vector<WebviewAcceleratorKey> accelerator_keys);
+  bool RequestFocus();
   bool SetUserAgent(const std::string& user_agent);
   bool OpenDevTools();
   bool SetBackgroundColor(int32_t color);

@@ -46,6 +46,7 @@ constexpr auto kMethodSetNavigationBlocklist = "setNavigationBlocklist";
 constexpr auto kMethodSetFpsLimit = "setFpsLimit";
 constexpr auto kMethodSetInterceptedAcceleratorKeys =
     "setInterceptedAcceleratorKeys";
+constexpr auto kMethodRequestFocus = "requestFocus";
 
 constexpr auto kEventType = "type";
 constexpr auto kEventValue = "value";
@@ -485,6 +486,14 @@ void WebviewBridge::HandleMethodCall(
     }
     webview_->SetInterceptedAcceleratorKeys(std::move(*keys));
     return result->Success();
+  }
+
+  // requestFocus
+  if (method_name.compare(kMethodRequestFocus) == 0) {
+    if (webview_->RequestFocus()) {
+      return result->Success();
+    }
+    return result->Error(kMethodFailed, "Requesting focus failed.");
   }
 
   // setCursorPos: [double x, double y]

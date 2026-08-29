@@ -449,6 +449,21 @@ class WebviewController extends ValueNotifier<WebviewValue> {
     super.dispose();
   }
 
+  /// Requests keyboard focus for this WebView.
+  ///
+  /// Call this after displaying a newly active WebView so WebView2 receives
+  /// keyboard input and registered accelerator keys.
+  Future<void> requestFocus() async {
+    if (_isDisposed) {
+      return;
+    }
+    if (!value.isInitialized) {
+      throw StateError(
+          'WebviewController must be initialized before requesting focus.');
+    }
+    return _methodChannel.invokeMethod('requestFocus');
+  }
+
   /// Loads the given [url].
   Future<void> loadUrl(String url) async {
     if (_isDisposed) {

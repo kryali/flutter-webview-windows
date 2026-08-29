@@ -1225,6 +1225,12 @@ void Webview::SetInterceptedAcceleratorKeys(
   intercepted_accelerator_keys_ = std::move(accelerator_keys);
 }
 
+bool Webview::RequestFocus() {
+  return IsValid() &&
+         SUCCEEDED(webview_controller_->MoveFocus(
+             COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC));
+}
+
 bool Webview::SetUserAgent(const std::string& user_agent) {
   if (settings2_) {
     return settings2_->put_UserAgent(util::Utf16FromUtf8(user_agent).c_str()) ==
