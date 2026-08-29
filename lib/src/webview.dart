@@ -42,6 +42,53 @@ class NavigationBlockedEvent {
   );
 }
 
+/// A virtual-key and exact modifier combination to intercept in WebView2.
+class WebviewAcceleratorKey {
+  const WebviewAcceleratorKey({
+    required this.virtualKey,
+    this.control = false,
+    this.shift = false,
+    this.alt = false,
+  });
+
+  final int virtualKey;
+  final bool control;
+  final bool shift;
+  final bool alt;
+
+  Map<String, dynamic> toJson() => <String, dynamic>{
+        'virtualKey': virtualKey,
+        'control': control,
+        'shift': shift,
+        'alt': alt,
+      };
+}
+
+/// An intercepted WebView2 accelerator keyboard event.
+class WebviewAcceleratorKeyEvent {
+  const WebviewAcceleratorKeyEvent({
+    required this.virtualKey,
+    required this.kind,
+    required this.control,
+    required this.shift,
+    required this.alt,
+    required this.wasKeyDown,
+    required this.isKeyReleased,
+  });
+
+  final int virtualKey;
+  final WebviewAcceleratorKeyEventKind kind;
+  final bool control;
+  final bool shift;
+  final bool alt;
+
+  /// Whether this physical key was already down before this event.
+  final bool wasKeyDown;
+
+  /// Whether this event represents a key release.
+  final bool isKeyReleased;
+}
+
 typedef PermissionRequestedDelegate
     = FutureOr<WebviewPermissionDecision> Function(
         String url, WebviewPermissionKind permissionKind, bool isUserInitiated);
@@ -65,6 +112,22 @@ PointerButton getButton(int value) {
 
 const String _pluginChannelPrefix = 'io.jns.webview.win';
 const MethodChannel _pluginChannel = MethodChannel(_pluginChannelPrefix);
+
+WebviewAcceleratorKeyEventKind _acceleratorKeyEventKindFromChannel(
+    dynamic value) {
+  switch (value) {
+    case 'keyDown':
+      return WebviewAcceleratorKeyEventKind.keyDown;
+    case 'keyUp':
+      return WebviewAcceleratorKeyEventKind.keyUp;
+    case 'systemKeyDown':
+      return WebviewAcceleratorKeyEventKind.systemKeyDown;
+    case 'systemKeyUp':
+      return WebviewAcceleratorKeyEventKind.systemKeyUp;
+    default:
+      throw ArgumentError.value(value, 'kind', 'Unknown accelerator key kind');
+  }
+}
 
 class WebviewValue {
   const WebviewValue({
@@ -188,6 +251,14 @@ class WebviewController extends ValueNotifier<WebviewValue> {
   /// A stream reflecting the current cursor style.
   Stream<SystemMouseCursor> get _cursor => _cursorStreamController.stream;
 
+  final StreamController<WebviewAcceleratorKeyEvent>
+      _acceleratorKeyPressedStreamController =
+      StreamController<WebviewAcceleratorKeyEvent>.broadcast();
+
+  /// Emits events for registered accelerator keys.
+  Stream<WebviewAcceleratorKeyEvent> get acceleratorKeyPressed =>
+      _acceleratorKeyPressedStreamController.stream;
+
   final StreamController<dynamic> _webMessageStreamController =
       StreamController<dynamic>();
 
@@ -274,6 +345,20 @@ class WebviewController extends ValueNotifier<WebviewValue> {
             );
             _navigationBlockedStreamController.add(value);
             break;
+          case 'acceleratorKeyPressed':
+            final event = map['value'] as Map<dynamic, dynamic>;
+            _acceleratorKeyPressedStreamController.add(
+              WebviewAcceleratorKeyEvent(
+                virtualKey: event['virtualKey'],
+                kind: _acceleratorKeyEventKindFromChannel(event['kind']),
+                control: event['control'],
+                shift: event['shift'],
+                alt: event['alt'],
+                wasKeyDown: event['wasKeyDown'],
+                isKeyReleased: event['isKeyReleased'],
+              ),
+            );
+            break;
         }
       });
 
@@ -293,6 +378,25 @@ class WebviewController extends ValueNotifier<WebviewValue> {
     }
 
     return _creatingCompleter.future;
+  }
+
+  /// Replaces the accelerator combinations intercepted by this controller.
+  ///
+  /// Registered combinations are consumed synchronously by the native plugin;
+  /// unregistered combinations continue to WebView2 normally.
+  Future<void> setInterceptedAcceleratorKeys(
+      List<WebviewAcceleratorKey> keys) async {
+    if (_isDisposed) {
+      return;
+    }
+    if (!value.isInitialized) {
+      throw StateError(
+          'WebviewController must be initialized before registering accelerator keys.');
+    }
+    return _methodChannel.invokeMethod(
+      'setInterceptedAcceleratorKeys',
+      keys.map((key) => key.toJson()).toList(),
+    );
   }
 
   Future<bool?> _onPermissionRequested(Map<dynamic, dynamic> args) async {
@@ -329,6 +433,18 @@ class WebviewController extends ValueNotifier<WebviewValue> {
       _isDisposed = true;
       await _eventStreamSubscription?.cancel();
       await _pluginChannel.invokeMethod('dispose', _textureId);
+      await _urlStreamController.close();
+      await _loadingStateStreamController.close();
+      await _downloadEventStreamController.close();
+      await _navigationBlockedStreamController.close();
+      await _onLoadErrorStreamController.close();
+      await _historyChangedStreamController.close();
+      await _securityStateChangedStreamController.close();
+      await _titleStreamController.close();
+      await _cursorStreamController.close();
+      await _acceleratorKeyPressedStreamController.close();
+      await _webMessageStreamController.close();
+      await _containsFullScreenElementChangedStreamController.close();
     }
     super.dispose();
   }

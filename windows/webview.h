@@ -54,6 +54,23 @@ struct WebviewDownloadEvent {
   INT64 totalBytesToReceive;
 };
 
+struct WebviewAcceleratorKey {
+  UINT virtual_key;
+  bool control;
+  bool shift;
+  bool alt;
+};
+
+struct WebviewAcceleratorKeyEvent {
+  UINT virtual_key;
+  COREWEBVIEW2_KEY_EVENT_KIND kind;
+  bool control;
+  bool shift;
+  bool alt;
+  bool was_key_down;
+  bool is_key_released;
+};
+
 struct WebviewCookie {
   std::string name;
   std::string value;
@@ -120,6 +137,7 @@ struct EventRegistrations {
   EventRegistrationToken download_starting_token_{};
   EventRegistrationToken download_bytes_received_token_{};
   EventRegistrationToken download_state_changed_token_{};
+  EventRegistrationToken accelerator_key_pressed_token_{};
 };
 
 class Webview {
@@ -156,6 +174,8 @@ class Webview {
   typedef std::function<void(bool contains_fullscreen_element)>
       ContainsFullScreenElementChangedCallback;
   typedef std::function<void(WebviewDownloadEvent)> DownloadEventCallback;
+  typedef std::function<void(WebviewAcceleratorKeyEvent)>
+      AcceleratorKeyPressedCallback;
 
   ~Webview();
 
@@ -213,6 +233,8 @@ class Webview {
   // per navigation.
   void SetNavigationBlocklist(std::vector<std::string> exact_urls,
                               std::vector<std::string> url_prefixes);
+  void SetInterceptedAcceleratorKeys(
+      std::vector<WebviewAcceleratorKey> accelerator_keys);
   bool SetUserAgent(const std::string& user_agent);
   bool OpenDevTools();
   bool SetBackgroundColor(int32_t color);
@@ -284,6 +306,10 @@ class Webview {
     contains_fullscreen_element_changed_callback_ = std::move(callback);
   }
 
+  void OnAcceleratorKeyPressed(AcceleratorKeyPressedCallback callback) {
+    accelerator_key_pressed_callback_ = std::move(callback);
+  }
+
  private:
   HWND hwnd_;
   bool owns_window_;
@@ -303,6 +329,7 @@ class Webview {
   std::vector<std::string> popup_window_address_bar_hidden_url_patterns_;
   std::vector<std::string> navigation_blocklist_exact_urls_;
   std::vector<std::string> navigation_blocklist_url_prefixes_;
+  std::vector<WebviewAcceleratorKey> intercepted_accelerator_keys_;
 
   winrt::com_ptr<ABI::Windows::UI::Composition::IVisual> surface_;
   winrt::com_ptr<ABI::Windows::UI::Composition::Desktop::IDesktopWindowTarget>
@@ -326,6 +353,7 @@ class Webview {
   DevtoolsProtocolEventCallback devtools_protocol_event_callback_;
   ContainsFullScreenElementChangedCallback
       contains_fullscreen_element_changed_callback_;
+  AcceleratorKeyPressedCallback accelerator_key_pressed_callback_;
 
   Webview(
       wil::com_ptr<ICoreWebView2CompositionController> composition_controller,

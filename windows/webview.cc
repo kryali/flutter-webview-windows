@@ -76,6 +76,12 @@ bool IsSystemDarkMode() {
   return status == ERROR_SUCCESS && value == 0;
 }
 
+bool IsModifierDown(int generic_key, int left_key, int right_key) {
+  return (GetKeyState(generic_key) & 0x8000) != 0 ||
+         (GetKeyState(left_key) & 0x8000) != 0 ||
+         (GetKeyState(right_key) & 0x8000) != 0;
+}
+
 // Regex-matches value against each of patterns, ignoring (rather than
 // failing on) any pattern that isn't valid regex syntax, since these come
 // from app-supplied Dart strings that could be malformed.
@@ -571,6 +577,10 @@ Webview::Webview(
 }
 
 Webview::~Webview() {
+  if (webview_controller_) {
+    webview_controller_->remove_AcceleratorKeyPressed(
+        event_registrations_.accelerator_key_pressed_token_);
+  }
   if (owns_window_) {
     DestroyWindow(hwnd_);
   }
@@ -653,6 +663,49 @@ void Webview::RegisterEventHandlers() {
   if (!webview_) {
     return;
   }
+
+  webview_controller_->add_AcceleratorKeyPressed(
+      Callback<ICoreWebView2AcceleratorKeyPressedEventHandler>(
+          [this](ICoreWebView2Controller* sender,
+                 ICoreWebView2AcceleratorKeyPressedEventArgs* args) -> HRESULT {
+            UINT virtual_key = 0;
+            COREWEBVIEW2_KEY_EVENT_KIND kind;
+            COREWEBVIEW2_PHYSICAL_KEY_STATUS physical_key_status{};
+            if (FAILED(args->get_VirtualKey(&virtual_key)) ||
+                FAILED(args->get_KeyEventKind(&kind)) ||
+                FAILED(args->get_PhysicalKeyStatus(&physical_key_status))) {
+              return S_OK;
+            }
+
+            const bool control =
+                IsModifierDown(VK_CONTROL, VK_LCONTROL, VK_RCONTROL);
+            const bool shift = IsModifierDown(VK_SHIFT, VK_LSHIFT, VK_RSHIFT);
+            const bool alt = IsModifierDown(VK_MENU, VK_LMENU, VK_RMENU);
+            const auto match = std::find_if(
+                intercepted_accelerator_keys_.begin(),
+                intercepted_accelerator_keys_.end(),
+                [virtual_key, control, shift, alt](
+                    const WebviewAcceleratorKey& accelerator) {
+                  return accelerator.virtual_key == virtual_key &&
+                         accelerator.control == control &&
+                         accelerator.shift == shift && accelerator.alt == alt;
+                });
+            if (match == intercepted_accelerator_keys_.end()) {
+              return S_OK;
+            }
+
+            args->put_Handled(TRUE);
+            if (!physical_key_status.WasKeyDown &&
+                accelerator_key_pressed_callback_) {
+              accelerator_key_pressed_callback_(
+                  {virtual_key, kind, control, shift, alt,
+                   physical_key_status.WasKeyDown == TRUE,
+                   physical_key_status.IsKeyReleased == TRUE});
+            }
+            return S_OK;
+          })
+          .Get(),
+      &event_registrations_.accelerator_key_pressed_token_);
 
   webview_->add_ContentLoading(
       Callback<ICoreWebView2ContentLoadingEventHandler>(
@@ -1160,6 +1213,11 @@ void Webview::SetNavigationBlocklist(std::vector<std::string> exact_urls,
                                      std::vector<std::string> url_prefixes) {
   navigation_blocklist_exact_urls_ = std::move(exact_urls);
   navigation_blocklist_url_prefixes_ = std::move(url_prefixes);
+}
+
+void Webview::SetInterceptedAcceleratorKeys(
+    std::vector<WebviewAcceleratorKey> accelerator_keys) {
+  intercepted_accelerator_keys_ = std::move(accelerator_keys);
 }
 
 bool Webview::SetUserAgent(const std::string& user_agent) {

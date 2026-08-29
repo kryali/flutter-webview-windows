@@ -12,6 +12,14 @@ enum WebviewDownloadEventKind {
   downloadProgress
 }
 
+/// The WebView2 keyboard message kind for an intercepted accelerator.
+enum WebviewAcceleratorKeyEventKind {
+  keyDown,
+  keyUp,
+  systemKeyDown,
+  systemKeyUp,
+}
+
 /// Pointer Event kind
 // Order must match WebviewPointerEventKind (see webview.h)
 enum WebviewPointerEventKind { activate, down, enter, leave, up, update }

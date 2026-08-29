@@ -44,6 +44,8 @@ constexpr auto kMethodSetCacheDisabled = "setCacheDisabled";
 constexpr auto kMethodSetPopupWindowPolicy = "setPopupWindowPolicy";
 constexpr auto kMethodSetNavigationBlocklist = "setNavigationBlocklist";
 constexpr auto kMethodSetFpsLimit = "setFpsLimit";
+constexpr auto kMethodSetInterceptedAcceleratorKeys =
+    "setInterceptedAcceleratorKeys";
 
 constexpr auto kEventType = "type";
 constexpr auto kEventValue = "value";
@@ -65,6 +67,42 @@ static const std::optional<std::pair<double, double>> GetPointFromArgs(
     return std::nullopt;
   }
   return std::make_pair(*x, *y);
+}
+
+static const std::optional<std::vector<WebviewAcceleratorKey>>
+GetAcceleratorKeys(const flutter::EncodableValue* args) {
+  const auto* list = std::get_if<flutter::EncodableList>(args);
+  if (!list) {
+    return std::nullopt;
+  }
+
+  std::vector<WebviewAcceleratorKey> keys;
+  keys.reserve(list->size());
+  for (const auto& value : *list) {
+    const auto* map = std::get_if<flutter::EncodableMap>(&value);
+    if (!map) {
+      return std::nullopt;
+    }
+    const auto virtual_key = map->find(flutter::EncodableValue("virtualKey"));
+    const auto control = map->find(flutter::EncodableValue("control"));
+    const auto shift = map->find(flutter::EncodableValue("shift"));
+    const auto alt = map->find(flutter::EncodableValue("alt"));
+    if (virtual_key == map->end() || control == map->end() ||
+        shift == map->end() || alt == map->end()) {
+      return std::nullopt;
+    }
+    const auto virtual_key_value = std::get_if<int32_t>(&virtual_key->second);
+    const auto control_value = std::get_if<bool>(&control->second);
+    const auto shift_value = std::get_if<bool>(&shift->second);
+    const auto alt_value = std::get_if<bool>(&alt->second);
+    if (!virtual_key_value || !control_value || !shift_value || !alt_value ||
+        *virtual_key_value < 0 || *virtual_key_value > 0xFFFF) {
+      return std::nullopt;
+    }
+    keys.push_back({static_cast<UINT>(*virtual_key_value), *control_value,
+                    *shift_value, *alt_value});
+  }
+  return keys;
 }
 
 static const std::optional<std::vector<std::string>> GetStringListFromMap(
@@ -363,6 +401,46 @@ void WebviewBridge::RegisterEventHandlers() {
              contains_fullscreen_element}});
         EmitEvent(event);
       });
+
+  webview_->OnAcceleratorKeyPressed(
+      [this](WebviewAcceleratorKeyEvent accelerator_event) {
+        const char* kind = "keyDown";
+        switch (accelerator_event.kind) {
+          case COREWEBVIEW2_KEY_EVENT_KIND_KEY_UP:
+            kind = "keyUp";
+            break;
+          case COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN:
+            kind = "systemKeyDown";
+            break;
+          case COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_UP:
+            kind = "systemKeyUp";
+            break;
+          case COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN:
+          default:
+            break;
+        }
+        const auto event = flutter::EncodableValue(flutter::EncodableMap{
+            {flutter::EncodableValue(kEventType),
+             flutter::EncodableValue("acceleratorKeyPressed")},
+            {flutter::EncodableValue(kEventValue),
+             flutter::EncodableValue(flutter::EncodableMap{
+                 {flutter::EncodableValue("virtualKey"),
+                  flutter::EncodableValue(
+                      static_cast<int32_t>(accelerator_event.virtual_key))},
+                 {flutter::EncodableValue("kind"), flutter::EncodableValue(kind)},
+                 {flutter::EncodableValue("control"),
+                  flutter::EncodableValue(accelerator_event.control)},
+                 {flutter::EncodableValue("shift"),
+                  flutter::EncodableValue(accelerator_event.shift)},
+                 {flutter::EncodableValue("alt"),
+                  flutter::EncodableValue(accelerator_event.alt)},
+                 {flutter::EncodableValue("wasKeyDown"),
+                  flutter::EncodableValue(accelerator_event.was_key_down)},
+                 {flutter::EncodableValue("isKeyReleased"),
+                  flutter::EncodableValue(accelerator_event.is_key_released)},
+             })}});
+        EmitEvent(event);
+      });
 }
 
 void WebviewBridge::OnPermissionRequested(
@@ -398,6 +476,16 @@ void WebviewBridge::HandleMethodCall(
     const flutter::MethodCall<flutter::EncodableValue>& method_call,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   const auto& method_name = method_call.method_name();
+
+  // setInterceptedAcceleratorKeys: List<{virtualKey, control, shift, alt}>
+  if (method_name.compare(kMethodSetInterceptedAcceleratorKeys) == 0) {
+    auto keys = GetAcceleratorKeys(method_call.arguments());
+    if (!keys) {
+      return result->Error(kErrorInvalidArgs);
+    }
+    webview_->SetInterceptedAcceleratorKeys(std::move(*keys));
+    return result->Success();
+  }
 
   // setCursorPos: [double x, double y]
   if (method_name.compare(kMethodSetCursorPos) == 0) {
