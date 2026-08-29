@@ -77,9 +77,14 @@ bool IsSystemDarkMode() {
 }
 
 bool IsModifierDown(int generic_key, int left_key, int right_key) {
-  return (GetKeyState(generic_key) & 0x8000) != 0 ||
-         (GetKeyState(left_key) & 0x8000) != 0 ||
-         (GetKeyState(right_key) & 0x8000) != 0;
+  // GetKeyState is tied to the calling thread's input queue. WebView2 may
+  // dispatch AcceleratorKeyPressed from a queue other than the one owning a
+  // focused HTML input, which can make it report stale modifier state. Query
+  // the physical keyboard state instead so matching remains correct while an
+  // editable page control owns focus.
+  return (GetAsyncKeyState(generic_key) & 0x8000) != 0 ||
+         (GetAsyncKeyState(left_key) & 0x8000) != 0 ||
+         (GetAsyncKeyState(right_key) & 0x8000) != 0;
 }
 
 // Regex-matches value against each of patterns, ignoring (rather than
