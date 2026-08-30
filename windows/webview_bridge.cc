@@ -257,9 +257,21 @@ WebviewBridge::WebviewBridge(flutter::BinaryMessenger* messenger,
   event_channel_->SetStreamHandler(std::move(handler));
 }
 
-WebviewBridge::~WebviewBridge() {
+WebviewBridge::~WebviewBridge() = default;
+
+void WebviewBridge::Dispose(std::function<void()> completion) {
   method_channel_->SetMethodCallHandler(nullptr);
-  texture_registrar_->UnregisterTexture(texture_id_);
+  event_channel_->SetStreamHandler(nullptr);
+  event_sink_.reset();
+  texture_bridge_->Stop();
+
+  texture_registrar_->UnregisterTexture(
+      texture_id_, [this, completion = std::move(completion)]() mutable {
+        // The engine no longer references flutter_texture_, so the texture and
+        // its captured TextureBridge pointer can now be released safely.
+        flutter_texture_.reset();
+        completion();
+      });
 }
 
 void WebviewBridge::RegisterEventHandlers() {

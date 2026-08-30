@@ -433,20 +433,27 @@ class WebviewController extends ValueNotifier<WebviewValue> {
       _isDisposed = true;
       await _eventStreamSubscription?.cancel();
       await _pluginChannel.invokeMethod('dispose', _textureId);
-      await _urlStreamController.close();
-      await _loadingStateStreamController.close();
-      await _downloadEventStreamController.close();
-      await _navigationBlockedStreamController.close();
-      await _onLoadErrorStreamController.close();
-      await _historyChangedStreamController.close();
-      await _securityStateChangedStreamController.close();
-      await _titleStreamController.close();
-      await _cursorStreamController.close();
-      await _acceleratorKeyPressedStreamController.close();
-      await _webMessageStreamController.close();
-      await _containsFullScreenElementChangedStreamController.close();
+      _closeStreams();
     }
     super.dispose();
+  }
+
+  void _closeStreams() {
+    // A single-subscription StreamController's close future does not complete
+    // until its done event is consumed. Some optional controller streams may
+    // never have a listener, so awaiting close would make dispose hang.
+    _urlStreamController.close();
+    _loadingStateStreamController.close();
+    _downloadEventStreamController.close();
+    _navigationBlockedStreamController.close();
+    _onLoadErrorStreamController.close();
+    _historyChangedStreamController.close();
+    _securityStateChangedStreamController.close();
+    _titleStreamController.close();
+    _cursorStreamController.close();
+    _acceleratorKeyPressedStreamController.close();
+    _webMessageStreamController.close();
+    _containsFullScreenElementChangedStreamController.close();
   }
 
   /// Requests keyboard focus for this WebView.

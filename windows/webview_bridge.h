@@ -5,6 +5,7 @@
 #include <flutter/standard_method_codec.h>
 #include <flutter/texture_registrar.h>
 
+#include <functional>
 #include <memory>
 
 #include "graphics_context.h"
@@ -19,14 +20,20 @@ class WebviewBridge {
                 std::unique_ptr<Webview> webview);
   ~WebviewBridge();
 
+  // Stops event/capture activity and releases the Flutter texture only after
+  // the engine confirms it is no longer in use.
+  void Dispose(std::function<void()> completion);
+
   TextureBridge* texture_bridge() const { return texture_bridge_.get(); }
 
   int64_t texture_id() const { return texture_id_; }
 
  private:
-  std::unique_ptr<flutter::TextureVariant> flutter_texture_;
-  std::unique_ptr<TextureBridge> texture_bridge_;
+  // Declared in reverse teardown order: Flutter texture must stop referring to
+  // TextureBridge before TextureBridge and Webview are released.
   std::unique_ptr<Webview> webview_;
+  std::unique_ptr<TextureBridge> texture_bridge_;
+  std::unique_ptr<flutter::TextureVariant> flutter_texture_;
   std::unique_ptr<flutter::EventSink<flutter::EncodableValue>> event_sink_;
   std::unique_ptr<flutter::EventChannel<flutter::EncodableValue>>
       event_channel_;

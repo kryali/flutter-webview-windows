@@ -55,6 +55,7 @@ class WebviewWindowsPlugin : public flutter::Plugin {
   virtual ~WebviewWindowsPlugin();
 
  private:
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> channel_;
   std::unique_ptr<WebviewPlatform> platform_;
   std::unique_ptr<WebviewHost> webview_host_;
   std::unordered_map<int64_t, std::unique_ptr<WebviewBridge>> instances_;
@@ -76,15 +77,14 @@ class WebviewWindowsPlugin : public flutter::Plugin {
 // static
 void WebviewWindowsPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows* registrar) {
-  auto channel =
-      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
-          registrar->messenger(), "io.jns.webview.win",
-          &flutter::StandardMethodCodec::GetInstance());
-
   auto plugin = std::make_unique<WebviewWindowsPlugin>(
       registrar->texture_registrar(), registrar->messenger());
 
-  channel->SetMethodCallHandler(
+  plugin->channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          registrar->messenger(), "io.jns.webview.win",
+          &flutter::StandardMethodCodec::GetInstance());
+  plugin->channel_->SetMethodCallHandler(
       [plugin_pointer = plugin.get()](const auto& call, auto result) {
         plugin_pointer->HandleMethodCall(call, std::move(result));
       });
@@ -101,6 +101,9 @@ WebviewWindowsPlugin::WebviewWindowsPlugin(flutter::TextureRegistrar* textures,
 }
 
 WebviewWindowsPlugin::~WebviewWindowsPlugin() {
+  // The root channel does not unregister itself. Clear its handler while the
+  // engine-owned messenger is still valid.
+  channel_->SetMethodCallHandler(nullptr);
   instances_.clear();
   UnregisterClass(window_class_.lpszClassName, nullptr);
 }
@@ -169,8 +172,15 @@ void WebviewWindowsPlugin::HandleMethodCall(
     if (const auto texture_id = std::get_if<int64_t>(method_call.arguments())) {
       const auto it = instances_.find(*texture_id);
       if (it != instances_.end()) {
+        auto bridge =
+            std::shared_ptr<WebviewBridge>(std::move(it->second));
         instances_.erase(it);
-        return result->Success();
+        std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>>
+            shared_result = std::move(result);
+        bridge->Dispose([bridge, shared_result]() {
+          shared_result->Success();
+        });
+        return;
       }
     }
     return result->Error(kErrorCodeInvalidId);

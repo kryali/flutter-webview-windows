@@ -34,8 +34,7 @@ TextureBridge::TextureBridge(GraphicsContext* graphics_context,
 }
 
 TextureBridge::~TextureBridge() {
-  const std::lock_guard<std::mutex> lock(mutex_);
-  StopInternal();
+  Stop();
   if (capture_item_) {
     capture_item_->remove_Closed(on_closed_token_);
   }
@@ -85,14 +84,25 @@ bool TextureBridge::Start() {
 }
 
 void TextureBridge::Stop() {
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (!is_running_) {
+      return;
+    }
+    // Make callbacks no-op before unregistering them. Do not hold mutex_ while
+    // removing FrameArrived: removal can wait for an in-flight callback, and
+    // that callback takes mutex_ in OnFrameArrived().
+    is_running_ = false;
+  }
+  if (frame_pool_) {
+    frame_pool_->remove_FrameArrived(on_frame_arrived_token_);
+  }
   const std::lock_guard<std::mutex> lock(mutex_);
   StopInternal();
 }
 
 void TextureBridge::StopInternal() {
-  if (is_running_) {
-    is_running_ = false;
-    frame_pool_->remove_FrameArrived(on_frame_arrived_token_);
+  if (capture_session_) {
     auto closable =
         capture_session_.try_as<ABI::Windows::Foundation::IClosable>();
     assert(closable);
@@ -102,41 +112,50 @@ void TextureBridge::StopInternal() {
 }
 
 void TextureBridge::OnFrameArrived() {
-  const std::lock_guard<std::mutex> lock(mutex_);
-  if (!is_running_) {
-    return;
-  }
+  FrameAvailableCallback frame_available;
+  {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (!is_running_) {
+      return;
+    }
 
-  bool has_frame = false;
+    bool has_frame = false;
 
-  winrt::com_ptr<ABI::Windows::Graphics::Capture::IDirect3D11CaptureFrame>
-      frame;
-  auto hr = frame_pool_->TryGetNextFrame(frame.put());
-  if (SUCCEEDED(hr) && frame) {
-    winrt::com_ptr<
-        ABI::Windows::Graphics::DirectX::Direct3D11::IDirect3DSurface>
-        frame_surface;
+    winrt::com_ptr<ABI::Windows::Graphics::Capture::IDirect3D11CaptureFrame>
+        frame;
+    auto hr = frame_pool_->TryGetNextFrame(frame.put());
+    if (SUCCEEDED(hr) && frame) {
+      winrt::com_ptr<
+          ABI::Windows::Graphics::DirectX::Direct3D11::IDirect3DSurface>
+          frame_surface;
 
-    if (SUCCEEDED(frame->get_Surface(frame_surface.put()))) {
-      last_frame_ =
-          util::TryGetDXGIInterfaceFromObject<ID3D11Texture2D>(frame_surface);
-      has_frame = !ShouldDropFrame();
+      if (SUCCEEDED(frame->get_Surface(frame_surface.put()))) {
+        last_frame_ =
+            util::TryGetDXGIInterfaceFromObject<ID3D11Texture2D>(frame_surface);
+        has_frame = !ShouldDropFrame();
+      }
+    }
+
+    if (needs_update_) {
+      ABI::Windows::Graphics::SizeInt32 size;
+      capture_item_->get_Size(&size);
+      frame_pool_->Recreate(
+          graphics_context_->device(),
+          static_cast<ABI::Windows::Graphics::DirectX::DirectXPixelFormat>(
+              kPixelFormat),
+          kNumBuffers, size);
+      needs_update_ = false;
+    }
+
+    if (has_frame) {
+      frame_available = frame_available_;
     }
   }
 
-  if (needs_update_) {
-    ABI::Windows::Graphics::SizeInt32 size;
-    capture_item_->get_Size(&size);
-    frame_pool_->Recreate(
-        graphics_context_->device(),
-        static_cast<ABI::Windows::Graphics::DirectX::DirectXPixelFormat>(
-            kPixelFormat),
-        kNumBuffers, size);
-    needs_update_ = false;
-  }
-
-  if (has_frame && frame_available_) {
-    frame_available_();
+  // MarkTextureFrameAvailable may synchronously request a surface descriptor,
+  // which locks mutex_. Never invoke it while holding that mutex.
+  if (frame_available) {
+    frame_available();
   }
 }
 
