@@ -582,13 +582,105 @@ Webview::Webview(
 }
 
 Webview::~Webview() {
+  Close();
+}
+
+void Webview::Close() {
+  if (is_closed_) {
+    return;
+  }
+  is_closed_ = true;
+  is_valid_ = false;
+
+  // Every registered handler captures this Webview. Remove them before Close,
+  // which can pump messages, so re-entrant WebView2 work cannot reach an object
+  // that is being destroyed.
+  UnregisterEventHandlers();
+  ClearCallbacks();
+
+  // Tear down composition references before closing the controller, while its
+  // message-only owner window and WebView2 environment are still alive.
+  if (composition_controller_) {
+    composition_controller_->put_RootVisualTarget(nullptr);
+  }
+  surface_ = nullptr;
+  window_target_ = nullptr;
+
+  if (webview_controller_) {
+    webview_controller_->put_IsVisible(FALSE);
+    webview_controller_->Close();
+  }
+
+  devtools_protocol_event_receiver_ = nullptr;
+  settings2_ = nullptr;
+  webview_ = nullptr;
+  webview_controller_ = nullptr;
+  composition_controller_ = nullptr;
+
+  if (owns_window_ && hwnd_) {
+    DestroyWindow(hwnd_);
+    hwnd_ = nullptr;
+  }
+}
+
+void Webview::UnregisterEventHandlers() {
   if (webview_controller_) {
     webview_controller_->remove_AcceleratorKeyPressed(
         event_registrations_.accelerator_key_pressed_token_);
+    webview_controller_->remove_GotFocus(
+        event_registrations_.got_focus_token_);
+    webview_controller_->remove_LostFocus(
+        event_registrations_.lost_focus_token_);
   }
-  if (owns_window_) {
-    DestroyWindow(hwnd_);
+  if (composition_controller_) {
+    composition_controller_->remove_CursorChanged(
+        event_registrations_.cursor_changed_token_);
   }
+  if (webview_) {
+    webview_->remove_ContentLoading(event_registrations_.content_loading_token_);
+    webview_->remove_NavigationCompleted(
+        event_registrations_.navigation_completed_token_);
+    webview_->remove_HistoryChanged(event_registrations_.history_changed_token_);
+    webview_->remove_SourceChanged(event_registrations_.source_changed_token_);
+    webview_->remove_DocumentTitleChanged(
+        event_registrations_.document_title_changed_token_);
+    webview_->remove_WebMessageReceived(
+        event_registrations_.web_message_received_token_);
+    webview_->remove_PermissionRequested(
+        event_registrations_.permission_requested_token_);
+    webview_->remove_NavigationStarting(
+        event_registrations_.navigation_starting_token_);
+    webview_->remove_NewWindowRequested(
+        event_registrations_.new_windows_requested_token_);
+    webview_->remove_ContainsFullScreenElementChanged(
+        event_registrations_.contains_fullscreen_element_changed_token_);
+    if (const auto webview4 = webview_.try_query<ICoreWebView2_4>()) {
+      webview4->remove_DownloadStarting(
+          event_registrations_.download_starting_token_);
+    }
+  }
+  if (devtools_protocol_event_receiver_) {
+    devtools_protocol_event_receiver_->remove_DevToolsProtocolEventReceived(
+        event_registrations_.devtools_protocol_event_token_);
+  }
+}
+
+void Webview::ClearCallbacks() {
+  url_changed_callback_ = nullptr;
+  loading_state_changed_callback_ = nullptr;
+  download_event_callback_ = nullptr;
+  on_load_error_callback_ = nullptr;
+  history_changed_callback_ = nullptr;
+  document_title_changed_callback_ = nullptr;
+  surface_size_changed_callback_ = nullptr;
+  cursor_changed_callback_ = nullptr;
+  focus_changed_callback_ = nullptr;
+  web_message_received_callback_ = nullptr;
+  permission_requested_callback_ = nullptr;
+  navigation_blocked_callback_ = nullptr;
+  devtools_protocol_event_callback_ = nullptr;
+  contains_fullscreen_element_changed_callback_ = nullptr;
+  accelerator_key_pressed_callback_ = nullptr;
 }
 
 bool Webview::CreateSurface(

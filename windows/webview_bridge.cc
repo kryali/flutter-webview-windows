@@ -264,6 +264,7 @@ void WebviewBridge::Dispose(std::function<void()> completion) {
   event_channel_->SetStreamHandler(nullptr);
   event_sink_.reset();
   texture_bridge_->Stop();
+  webview_->Close();
 
   texture_registrar_->UnregisterTexture(
       texture_id_, [this, completion = std::move(completion)]() mutable {

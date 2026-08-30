@@ -179,6 +179,10 @@ class Webview {
 
   ~Webview();
 
+  // Synchronously stops event delivery and closes the WebView2 controller.
+  // Safe to call more than once.
+  void Close();
+
   ABI::Windows::UI::Composition::IVisual* const surface() {
     return surface_.get();
   }
@@ -315,6 +319,7 @@ class Webview {
   HWND hwnd_;
   bool owns_window_;
   bool is_valid_ = false;
+  bool is_closed_ = false;
   float scale_factor_ = 1.0;
   wil::com_ptr<ICoreWebView2CompositionController> composition_controller_;
   wil::com_ptr<ICoreWebView2Controller3> webview_controller_;
@@ -364,6 +369,8 @@ class Webview {
       winrt::com_ptr<ABI::Windows::UI::Composition::ICompositor> compositor,
       HWND hwnd, bool offscreen_only);
   void RegisterEventHandlers();
+  void UnregisterEventHandlers();
+  void ClearCallbacks();
   void EnableSecurityUpdates();
   void SendScroll(double offset, bool horizontal);
 };
