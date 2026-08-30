@@ -5,10 +5,12 @@
 #include <flutter/standard_method_codec.h>
 #include <windows.h>
 
+#include <atomic>
 #include <memory>
 #include <string>
 #include <unordered_map>
 
+#include "engine_availability.h"
 #include "util/string_converter.h"
 #include "webview_bridge.h"
 #include "webview_host.h"
@@ -98,12 +100,17 @@ WebviewWindowsPlugin::WebviewWindowsPlugin(flutter::TextureRegistrar* textures,
   window_class_.lpszClassName = L"FlutterWebviewMessage";
   window_class_.lpfnWndProc = &DefWindowProc;
   RegisterClass(&window_class_);
+  webview_windows::SetPluginAlive(true);
 }
 
 WebviewWindowsPlugin::~WebviewWindowsPlugin() {
-  // The root channel does not unregister itself. Clear its handler while the
-  // engine-owned messenger is still valid.
-  channel_->SetMethodCallHandler(nullptr);
+  // Flutter clears the messenger's engine pointer before plugin destruction.
+  // Do not invoke channel or texture registrar APIs after that point; the
+  // dying engine will discard their registrations itself.
+  webview_windows::SetPluginAlive(false);
+  if (webview_windows::EngineAvailable() && channel_) {
+    channel_->SetMethodCallHandler(nullptr);
+  }
   instances_.clear();
   UnregisterClass(window_class_.lpszClassName, nullptr);
 }
@@ -252,6 +259,8 @@ bool WebviewWindowsPlugin::InitPlatform() {
 
 void WebviewWindowsPluginRegisterWithRegistrar(
     FlutterDesktopPluginRegistrarRef registrar) {
+  webview_windows::CaptureMessengerForAvailabilityChecks(
+      FlutterDesktopPluginRegistrarGetMessenger(registrar));
   WebviewWindowsPlugin::RegisterWithRegistrar(
       flutter::PluginRegistrarManager::GetInstance()
           ->GetRegistrar<flutter::PluginRegistrarWindows>(registrar));

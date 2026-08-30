@@ -5,6 +5,7 @@
 
 #include <format>
 
+#include "engine_availability.h"
 #include "texture_bridge_gpu.h"
 
 namespace {
@@ -217,8 +218,10 @@ WebviewBridge::WebviewBridge(flutter::BinaryMessenger* messenger,
           }));
 
   texture_id_ = texture_registrar->RegisterTexture(flutter_texture_.get());
-  texture_bridge_->SetOnFrameAvailable(
-      [this]() { texture_registrar_->MarkTextureFrameAvailable(texture_id_); });
+  texture_bridge_->SetOnFrameAvailable([this]() {
+    webview_windows::IfEngineAvailableLocked(
+        [this]() { texture_registrar_->MarkTextureFrameAvailable(texture_id_); });
+  });
   // texture_bridge_->SetOnSurfaceSizeChanged([this](Size size) {
   //  webview_->SetSurfaceSize(size.width, size.height);
   //});

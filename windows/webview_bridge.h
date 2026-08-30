@@ -8,6 +8,7 @@
 #include <functional>
 #include <memory>
 
+#include "engine_availability.h"
 #include "graphics_context.h"
 #include "texture_bridge.h"
 #include "webview.h"
@@ -50,7 +51,7 @@ class WebviewBridge {
 
   template <typename T>
   void EmitEvent(const T& value) {
-    if (event_sink_) {
+    if (event_sink_ && webview_windows::PluginAlive()) {
       event_sink_->Success(value);
     }
   }
