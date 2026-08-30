@@ -171,6 +171,10 @@ class Webview {
   typedef std::function<void(const std::string& url, bool is_user_initiated,
                              bool is_redirected)>
       NavigationBlockedCallback;
+  typedef std::function<void(bool allow)> NewWindowRequestedCompleter;
+  typedef std::function<void(const std::string& url, bool is_user_initiated,
+                             NewWindowRequestedCompleter completer)>
+      NewWindowRequestedCallback;
   typedef std::function<void(bool contains_fullscreen_element)>
       ContainsFullScreenElementChangedCallback;
   typedef std::function<void(WebviewDownloadEvent)> DownloadEventCallback;
@@ -237,6 +241,9 @@ class Webview {
   // per navigation.
   void SetNavigationBlocklist(std::vector<std::string> exact_urls,
                               std::vector<std::string> url_prefixes);
+  void SetNewWindowDelegateEnabled(bool enabled) {
+    new_window_delegate_enabled_ = enabled;
+  }
   void SetInterceptedAcceleratorKeys(
       std::vector<WebviewAcceleratorKey> accelerator_keys);
   bool RequestFocus();
@@ -302,6 +309,10 @@ class Webview {
     navigation_blocked_callback_ = std::move(callback);
   }
 
+  void OnNewWindowRequested(NewWindowRequestedCallback callback) {
+    new_window_requested_callback_ = std::move(callback);
+  }
+
   void OnDevtoolsProtocolEvent(DevtoolsProtocolEventCallback callback) {
     devtools_protocol_event_callback_ = std::move(callback);
   }
@@ -332,6 +343,7 @@ class Webview {
   WebviewPopupWindowPolicy popup_window_policy_ =
       WebviewPopupWindowPolicy::Allow;
   bool popup_window_show_address_bar_ = true;
+  bool new_window_delegate_enabled_ = false;
   std::vector<std::string> popup_window_address_bar_hidden_url_patterns_;
   std::vector<std::string> navigation_blocklist_exact_urls_;
   std::vector<std::string> navigation_blocklist_url_prefixes_;
@@ -356,6 +368,7 @@ class Webview {
   WebMessageReceivedCallback web_message_received_callback_;
   PermissionRequestedCallback permission_requested_callback_;
   NavigationBlockedCallback navigation_blocked_callback_;
+  NewWindowRequestedCallback new_window_requested_callback_;
   DevtoolsProtocolEventCallback devtools_protocol_event_callback_;
   ContainsFullScreenElementChangedCallback
       contains_fullscreen_element_changed_callback_;

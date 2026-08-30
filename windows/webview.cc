@@ -134,12 +134,13 @@ constexpr int kAppIconResourceId = 101;
 // HWND is destroyed.
 class PopupWindow {
  public:
-  static void Create(ICoreWebView2Environment3* environment,
-                      ICoreWebView2NewWindowRequestedEventArgs* args,
-                      bool show_address_bar,
-                      wil::com_ptr<ICoreWebView2Deferral> deferral) {
+  static void Create(
+      ICoreWebView2Environment3* environment,
+      wil::com_ptr<ICoreWebView2NewWindowRequestedEventArgs> args,
+      bool show_address_bar,
+      wil::com_ptr<ICoreWebView2Deferral> deferral) {
     auto* popup = new PopupWindow();
-    popup->Initialize(environment, args, show_address_bar,
+    popup->Initialize(environment, std::move(args), show_address_bar,
                       std::move(deferral));
   }
 
@@ -355,10 +356,11 @@ class PopupWindow {
     loaded = true;
   }
 
-  void Initialize(ICoreWebView2Environment3* environment,
-                  ICoreWebView2NewWindowRequestedEventArgs* args,
-                  bool show_address_bar,
-                  wil::com_ptr<ICoreWebView2Deferral> deferral) {
+  void Initialize(
+      ICoreWebView2Environment3* environment,
+      wil::com_ptr<ICoreWebView2NewWindowRequestedEventArgs> args,
+      bool show_address_bar,
+      wil::com_ptr<ICoreWebView2Deferral> deferral) {
     EnsureWindowClassRegistered();
     show_address_bar_ = show_address_bar;
     dark_mode_ = IsSystemDarkMode();
@@ -477,7 +479,8 @@ class PopupWindow {
     environment->CreateCoreWebView2Controller(
         hwnd_,
         Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
-            [this, hwnd, args, deferral = std::move(deferral)](
+            [this, hwnd, args = std::move(args),
+             deferral = std::move(deferral)](
                 HRESULT result,
                 ICoreWebView2Controller* controller) -> HRESULT {
               if (FAILED(result) || !controller) {
@@ -678,6 +681,9 @@ void Webview::ClearCallbacks() {
   web_message_received_callback_ = nullptr;
   permission_requested_callback_ = nullptr;
   navigation_blocked_callback_ = nullptr;
+  // A pending new-window callback owns its COM event arguments and deferral,
+  // so it can finish safely even after this Webview has been closed.
+  new_window_requested_callback_ = nullptr;
   devtools_protocol_event_callback_ = nullptr;
   contains_fullscreen_element_changed_callback_ = nullptr;
   accelerator_key_pressed_callback_ = nullptr;
@@ -1020,39 +1026,86 @@ void Webview::RegisterEventHandlers() {
       Callback<ICoreWebView2NewWindowRequestedEventHandler>(
           [this](ICoreWebView2* sender,
                  ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
-            switch (popup_window_policy_) {
-              case WebviewPopupWindowPolicy::Deny:
-                args->put_Handled(TRUE);
-                break;
-              case WebviewPopupWindowPolicy::ShowInSameWindow:
-                args->put_NewWindow(webview_.get());
-                args->put_Handled(TRUE);
-                break;
-              case WebviewPopupWindowPolicy::Allow: {
-                wil::com_ptr<ICoreWebView2Deferral> deferral;
-                if (SUCCEEDED(args->GetDeferral(deferral.put())) &&
-                    deferral) {
-                  bool show_address_bar = popup_window_show_address_bar_;
-                  if (show_address_bar &&
-                      !popup_window_address_bar_hidden_url_patterns_
-                           .empty()) {
-                    wil::unique_cotaskmem_string wuri;
-                    if (SUCCEEDED(args->get_Uri(&wuri))) {
-                      const std::string uri = util::Utf8FromUtf16(wuri.get());
-                      if (MatchesAnyPattern(
-                              uri,
-                              popup_window_address_bar_hidden_url_patterns_)) {
-                        show_address_bar = false;
+            wil::com_ptr<ICoreWebView2Environment3> popup_environment =
+                host_->environment();
+            auto apply_policy =
+                [policy = popup_window_policy_,
+                 show_address_bar = popup_window_show_address_bar_,
+                 hidden_patterns =
+                     popup_window_address_bar_hidden_url_patterns_,
+                 webview = webview_,
+                 environment = std::move(popup_environment)](
+                    wil::com_ptr<ICoreWebView2NewWindowRequestedEventArgs>
+                        request_args,
+                    wil::com_ptr<ICoreWebView2Deferral> deferral,
+                    bool allow) mutable {
+                  if (!allow) {
+                    request_args->put_Handled(TRUE);
+                    deferral->Complete();
+                    return;
+                  }
+
+                  switch (policy) {
+                    case WebviewPopupWindowPolicy::Deny:
+                      request_args->put_Handled(TRUE);
+                      deferral->Complete();
+                      break;
+                    case WebviewPopupWindowPolicy::ShowInSameWindow:
+                      request_args->put_NewWindow(webview.get());
+                      request_args->put_Handled(TRUE);
+                      deferral->Complete();
+                      break;
+                    case WebviewPopupWindowPolicy::Allow: {
+                      if (show_address_bar && !hidden_patterns.empty()) {
+                        wil::unique_cotaskmem_string wuri;
+                        if (SUCCEEDED(request_args->get_Uri(&wuri))) {
+                          const std::string uri =
+                              util::Utf8FromUtf16(wuri.get());
+                          if (MatchesAnyPattern(uri, hidden_patterns)) {
+                            show_address_bar = false;
+                          }
+                        }
                       }
+                      PopupWindow::Create(environment.get(),
+                                          std::move(request_args),
+                                          show_address_bar,
+                                          std::move(deferral));
+                      break;
                     }
                   }
-                  PopupWindow::Create(host_->environment(), args,
-                                      show_address_bar, std::move(deferral));
-                }
-                break;
+                };
+
+            wil::com_ptr<ICoreWebView2Deferral> deferral;
+            if (FAILED(args->GetDeferral(deferral.put())) || !deferral) {
+              return S_OK;
+            }
+            wil::com_ptr<ICoreWebView2NewWindowRequestedEventArgs> request_args;
+            if (FAILED(args->QueryInterface(IID_PPV_ARGS(&request_args))) ||
+                !request_args) {
+              deferral->Complete();
+              return S_OK;
+            }
+
+            if (new_window_delegate_enabled_ &&
+                new_window_requested_callback_) {
+              wil::unique_cotaskmem_string wuri;
+              BOOL is_user_initiated = FALSE;
+              if (SUCCEEDED(args->get_Uri(&wuri)) &&
+                  SUCCEEDED(args->get_IsUserInitiated(&is_user_initiated))) {
+                new_window_requested_callback_(
+                    util::Utf8FromUtf16(wuri.get()),
+                    is_user_initiated == TRUE,
+                    [apply_policy = std::move(apply_policy),
+                     request_args = std::move(request_args),
+                     deferral = std::move(deferral)](bool allow) mutable {
+                      apply_policy(std::move(request_args), std::move(deferral),
+                                   allow);
+                    });
+                return S_OK;
               }
             }
 
+            apply_policy(std::move(request_args), std::move(deferral), true);
             return S_OK;
           })
           .Get(),

@@ -93,6 +93,24 @@ typedef PermissionRequestedDelegate
     = FutureOr<WebviewPermissionDecision> Function(
         String url, WebviewPermissionKind permissionKind, bool isUserInitiated);
 
+/// Information about a request to open a new browsing window.
+///
+/// WebView2 raises these requests for links with `target="_blank"`, calls to
+/// `window.open()`, and browser gestures such as Ctrl-clicking a link.
+class WebviewNewWindowRequest {
+  const WebviewNewWindowRequest({
+    required this.url,
+    required this.isUserInitiated,
+  });
+
+  final Uri url;
+  final bool isUserInitiated;
+}
+
+/// Decides whether WebView2 may handle a new-window request.
+typedef NewWindowRequestedDelegate = FutureOr<WebviewNavigationDecision>
+    Function(WebviewNewWindowRequest request);
+
 typedef ScriptID = String;
 
 /// Attempts to translate a button constant such as [kPrimaryMouseButton]
@@ -187,6 +205,7 @@ class WebviewController extends ValueNotifier<WebviewValue> {
   Future<void> get ready => _creatingCompleter.future;
 
   PermissionRequestedDelegate? _permissionRequested;
+  NewWindowRequestedDelegate? _newWindowRequested;
 
   late MethodChannel _methodChannel;
   late EventChannel _eventChannel;
@@ -367,6 +386,9 @@ class WebviewController extends ValueNotifier<WebviewValue> {
           return _onPermissionRequested(
               call.arguments as Map<dynamic, dynamic>);
         }
+        if (call.method == 'newWindowRequested') {
+          return _onNewWindowRequested(call.arguments as Map<dynamic, dynamic>);
+        }
 
         throw MissingPluginException('Unknown method ${call.method}');
       });
@@ -378,6 +400,33 @@ class WebviewController extends ValueNotifier<WebviewValue> {
     }
 
     return _creatingCompleter.future;
+  }
+
+  /// Sets the delegate used to decide whether WebView2 may handle requests to
+  /// open a new window.
+  ///
+  /// New-window requests include links with `target="_blank"`, calls to
+  /// `window.open()`, and browser gestures such as Ctrl-clicking a link. This
+  /// does not intercept ordinary current-window navigations.
+  ///
+  /// Return [WebviewNavigationDecision.allow] to apply the popup behavior set
+  /// by [setPopupWindowPolicy], or [WebviewNavigationDecision.reject] after
+  /// handling the URL in Flutter. Passing `null` restores the normal popup
+  /// policy without invoking Dart.
+  Future<void> setNewWindowDelegate(
+      NewWindowRequestedDelegate? delegate) async {
+    if (_isDisposed) {
+      return;
+    }
+    if (!value.isInitialized) {
+      throw StateError(
+          'WebviewController must be initialized before setting a new-window delegate.');
+    }
+    _newWindowRequested = delegate;
+    return _methodChannel.invokeMethod(
+      'setNewWindowDelegateEnabled',
+      delegate != null,
+    );
   }
 
   /// Replaces the accelerator combinations intercepted by this controller.
@@ -424,6 +473,37 @@ class WebviewController extends ValueNotifier<WebviewValue> {
     }
 
     return null;
+  }
+
+  Future<int?> _onNewWindowRequested(Map<dynamic, dynamic> args) async {
+    final delegate = _newWindowRequested;
+    if (delegate == null) {
+      return null;
+    }
+
+    final url = args['url'] as String?;
+    final isUserInitiated = args['isUserInitiated'] as bool?;
+    if (url == null || isUserInitiated == null) {
+      return null;
+    }
+
+    final uri = Uri.tryParse(url);
+    if (uri == null) {
+      return null;
+    }
+
+    try {
+      final decision = await Future<WebviewNavigationDecision>.value(
+        delegate(WebviewNewWindowRequest(
+          url: uri,
+          isUserInitiated: isUserInitiated,
+        )),
+      ).timeout(const Duration(seconds: 5));
+      return decision.index;
+    } catch (_) {
+      // Preserve existing popup behavior if the delegate throws or times out.
+      return WebviewNavigationDecision.allow.index;
+    }
   }
 
   @override

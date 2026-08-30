@@ -38,6 +38,15 @@ enum WebviewPermissionKind {
 
 enum WebviewPermissionDecision { none, allow, deny }
 
+/// The result of a navigation request handled by a navigation delegate.
+enum WebviewNavigationDecision {
+  /// Continue the navigation using WebView2's normal behavior.
+  allow,
+
+  /// Cancel the navigation before displaying the requested page.
+  reject,
+}
+
 /// The policy for popup requests.
 ///
 /// [allow] allows popups and will create new windows.

@@ -44,6 +44,8 @@ constexpr auto kMethodClearCache = "clearCache";
 constexpr auto kMethodSetCacheDisabled = "setCacheDisabled";
 constexpr auto kMethodSetPopupWindowPolicy = "setPopupWindowPolicy";
 constexpr auto kMethodSetNavigationBlocklist = "setNavigationBlocklist";
+constexpr auto kMethodSetNewWindowDelegateEnabled =
+    "setNewWindowDelegateEnabled";
 constexpr auto kMethodSetFpsLimit = "setFpsLimit";
 constexpr auto kMethodSetInterceptedAcceleratorKeys =
     "setInterceptedAcceleratorKeys";
@@ -392,6 +394,12 @@ void WebviewBridge::RegisterEventHandlers() {
         OnPermissionRequested(url, kind, is_user_initiated, completer);
       });
 
+  webview_->OnNewWindowRequested(
+      [this](const std::string& url, bool is_user_initiated,
+             Webview::NewWindowRequestedCompleter completer) {
+        OnNewWindowRequested(url, is_user_initiated, std::move(completer));
+      });
+
   webview_->OnNavigationBlocked([this](const std::string& url,
                                        bool isUserInitiated,
                                        bool isRedirected) {
@@ -487,6 +495,28 @@ void WebviewBridge::OnPermissionRequested(
             completer(WebviewPermissionState::Default);
           },
           [completer]() { completer(WebviewPermissionState::Default); }));
+}
+
+void WebviewBridge::OnNewWindowRequested(
+    const std::string& url, bool is_user_initiated,
+    Webview::NewWindowRequestedCompleter completer) {
+  auto args = std::make_unique<flutter::EncodableValue>(flutter::EncodableMap{
+      {"url", url}, {"isUserInitiated", is_user_initiated}});
+
+  method_channel_->InvokeMethod(
+      "newWindowRequested", std::move(args),
+      std::make_unique<flutter::MethodResultFunctions<flutter::EncodableValue>>(
+          [completer](const flutter::EncodableValue* result) {
+            const auto decision = std::get_if<int32_t>(result);
+            // WebviewNavigationDecision: allow = 0, reject = 1.
+            completer(decision == nullptr || *decision == 0);
+          },
+          [completer](const std::string& error_code,
+                      const std::string& error_message,
+                      const flutter::EncodableValue* error_details) {
+            completer(true);
+          },
+          [completer]() { completer(true); }));
 }
 
 void WebviewBridge::HandleMethodCall(
@@ -972,6 +1002,15 @@ void WebviewBridge::HandleMethodCall(
 
     webview_->SetNavigationBlocklist(std::move(*exact_urls),
                                      std::move(*url_prefixes));
+    return result->Success();
+  }
+
+  if (method_name.compare(kMethodSetNewWindowDelegateEnabled) == 0) {
+    const auto enabled = std::get_if<bool>(method_call.arguments());
+    if (!enabled) {
+      return result->Error(kErrorInvalidArgs);
+    }
+    webview_->SetNewWindowDelegateEnabled(*enabled);
     return result->Success();
   }
 

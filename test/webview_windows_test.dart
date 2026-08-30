@@ -17,6 +17,21 @@ void main() {
     });
   });
 
+  test('WebviewNavigationDecision uses stable channel indexes', () {
+    expect(WebviewNavigationDecision.allow.index, 0);
+    expect(WebviewNavigationDecision.reject.index, 1);
+  });
+
+  test('WebviewNewWindowRequest retains request information', () {
+    final request = WebviewNewWindowRequest(
+      url: Uri.parse('https://example.com/new'),
+      isUserInitiated: true,
+    );
+
+    expect(request.url, Uri.parse('https://example.com/new'));
+    expect(request.isUserInitiated, isTrue);
+  });
+
   test('WebviewAcceleratorKeyEvent retains physical key status', () {
     const event = WebviewAcceleratorKeyEvent(
       virtualKey: 0x09,

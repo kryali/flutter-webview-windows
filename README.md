@@ -50,6 +50,35 @@ controller.onNavigationBlocked.listen((event) {
 });
 ```
 
+## Handling new windows
+
+Use `setNewWindowDelegate` to decide how to handle links with
+`target="_blank"`, calls to `window.open()`, and browser gestures such as
+Ctrl-clicking a link. WebView2 defers the request while the delegate runs.
+Returning `allow` applies the controller's configured popup policy; returning
+`reject` suppresses the popup, allowing the app to open the URL externally or
+in its own tab first.
+
+```dart
+await controller.setNewWindowDelegate((request) async {
+  await launchUrl(
+    request.url,
+    mode: LaunchMode.externalApplication,
+  );
+  return WebviewNavigationDecision.reject;
+});
+```
+
+Passing `null` removes the delegate:
+
+```dart
+await controller.setNewWindowDelegate(null);
+```
+
+This callback handles new-window requests only. Ordinary current-window
+navigations must use `setNavigationBlocklist`, because WebView2 does not allow
+its `NavigationStarting` event to be deferred while Dart returns a decision.
+
 ## Limitations
 This plugin provides seamless composition of web-based contents with other Flutter widgets by rendering off-screen.
 
