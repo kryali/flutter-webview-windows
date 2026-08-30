@@ -26,10 +26,18 @@ void main() {
     final request = WebviewNewWindowRequest(
       url: Uri.parse('https://example.com/new'),
       isUserInitiated: true,
+      modifiers: const WebviewKeyModifiers(
+        ctrl: true,
+        shift: false,
+        alt: false,
+      ),
     );
 
     expect(request.url, Uri.parse('https://example.com/new'));
     expect(request.isUserInitiated, isTrue);
+    expect(request.modifiers.ctrl, isTrue);
+    expect(request.modifiers.shift, isFalse);
+    expect(request.modifiers.alt, isFalse);
   });
 
   test('WebviewAcceleratorKeyEvent retains physical key status', () {

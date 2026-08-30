@@ -93,6 +93,19 @@ typedef PermissionRequestedDelegate
     = FutureOr<WebviewPermissionDecision> Function(
         String url, WebviewPermissionKind permissionKind, bool isUserInitiated);
 
+/// Keyboard modifiers active when a WebView request was raised.
+class WebviewKeyModifiers {
+  const WebviewKeyModifiers({
+    required this.ctrl,
+    required this.shift,
+    required this.alt,
+  });
+
+  final bool ctrl;
+  final bool shift;
+  final bool alt;
+}
+
 /// Information about a request to open a new browsing window.
 ///
 /// WebView2 raises these requests for links with `target="_blank"`, calls to
@@ -101,10 +114,16 @@ class WebviewNewWindowRequest {
   const WebviewNewWindowRequest({
     required this.url,
     required this.isUserInitiated,
+    this.modifiers = const WebviewKeyModifiers(
+      ctrl: false,
+      shift: false,
+      alt: false,
+    ),
   });
 
   final Uri url;
   final bool isUserInitiated;
+  final WebviewKeyModifiers modifiers;
 }
 
 /// Decides whether WebView2 may handle a new-window request.
@@ -483,7 +502,15 @@ class WebviewController extends ValueNotifier<WebviewValue> {
 
     final url = args['url'] as String?;
     final isUserInitiated = args['isUserInitiated'] as bool?;
-    if (url == null || isUserInitiated == null) {
+    final modifiers = args['modifiers'] as Map<dynamic, dynamic>?;
+    if (url == null || isUserInitiated == null || modifiers == null) {
+      return null;
+    }
+
+    final ctrl = modifiers['ctrl'] as bool?;
+    final shift = modifiers['shift'] as bool?;
+    final alt = modifiers['alt'] as bool?;
+    if (ctrl == null || shift == null || alt == null) {
       return null;
     }
 
@@ -497,6 +524,11 @@ class WebviewController extends ValueNotifier<WebviewValue> {
         delegate(WebviewNewWindowRequest(
           url: uri,
           isUserInitiated: isUserInitiated,
+          modifiers: WebviewKeyModifiers(
+            ctrl: ctrl,
+            shift: shift,
+            alt: alt,
+          ),
         )),
       ).timeout(const Duration(seconds: 5));
       return decision.index;

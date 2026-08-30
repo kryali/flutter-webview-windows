@@ -396,8 +396,10 @@ void WebviewBridge::RegisterEventHandlers() {
 
   webview_->OnNewWindowRequested(
       [this](const std::string& url, bool is_user_initiated,
+             WebviewKeyModifiers modifiers,
              Webview::NewWindowRequestedCompleter completer) {
-        OnNewWindowRequested(url, is_user_initiated, std::move(completer));
+        OnNewWindowRequested(url, is_user_initiated, modifiers,
+                             std::move(completer));
       });
 
   webview_->OnNavigationBlocked([this](const std::string& url,
@@ -499,9 +501,17 @@ void WebviewBridge::OnPermissionRequested(
 
 void WebviewBridge::OnNewWindowRequested(
     const std::string& url, bool is_user_initiated,
+    WebviewKeyModifiers modifiers,
     Webview::NewWindowRequestedCompleter completer) {
   auto args = std::make_unique<flutter::EncodableValue>(flutter::EncodableMap{
-      {"url", url}, {"isUserInitiated", is_user_initiated}});
+      {"url", url},
+      {"isUserInitiated", is_user_initiated},
+      {"modifiers",
+       flutter::EncodableValue(flutter::EncodableMap{
+           {"ctrl", modifiers.control},
+           {"shift", modifiers.shift},
+           {"alt", modifiers.alt},
+       })}});
 
   method_channel_->InvokeMethod(
       "newWindowRequested", std::move(args),

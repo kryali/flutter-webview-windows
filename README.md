@@ -59,13 +59,17 @@ Returning `allow` applies the controller's configured popup policy; returning
 `reject` suppresses the popup, allowing the app to open the URL externally or
 in its own tab first.
 
+For example, an app can turn only Ctrl-clicked links into its own tabs while
+leaving `target="_blank"` and `window.open()` to the configured popup policy:
+
 ```dart
 await controller.setNewWindowDelegate((request) async {
-  await launchUrl(
-    request.url,
-    mode: LaunchMode.externalApplication,
-  );
-  return WebviewNavigationDecision.reject;
+  if (request.modifiers.ctrl) {
+    await tabManager.openTab(request.url);
+    return WebviewNavigationDecision.reject;
+  }
+
+  return WebviewNavigationDecision.allow;
 });
 ```
 

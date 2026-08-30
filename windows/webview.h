@@ -71,6 +71,12 @@ struct WebviewAcceleratorKeyEvent {
   bool is_key_released;
 };
 
+struct WebviewKeyModifiers {
+  bool control;
+  bool shift;
+  bool alt;
+};
+
 struct WebviewCookie {
   std::string name;
   std::string value;
@@ -173,6 +179,7 @@ class Webview {
       NavigationBlockedCallback;
   typedef std::function<void(bool allow)> NewWindowRequestedCompleter;
   typedef std::function<void(const std::string& url, bool is_user_initiated,
+                             WebviewKeyModifiers modifiers,
                              NewWindowRequestedCompleter completer)>
       NewWindowRequestedCallback;
   typedef std::function<void(bool contains_fullscreen_element)>

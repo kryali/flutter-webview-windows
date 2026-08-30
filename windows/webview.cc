@@ -1092,9 +1092,14 @@ void Webview::RegisterEventHandlers() {
               BOOL is_user_initiated = FALSE;
               if (SUCCEEDED(args->get_Uri(&wuri)) &&
                   SUCCEEDED(args->get_IsUserInitiated(&is_user_initiated))) {
+                const WebviewKeyModifiers modifiers{
+                    (GetKeyState(VK_CONTROL) & 0x8000) != 0,
+                    (GetKeyState(VK_SHIFT) & 0x8000) != 0,
+                    (GetKeyState(VK_MENU) & 0x8000) != 0,
+                };
                 new_window_requested_callback_(
                     util::Utf8FromUtf16(wuri.get()),
-                    is_user_initiated == TRUE,
+                    is_user_initiated == TRUE, modifiers,
                     [apply_policy = std::move(apply_policy),
                      request_args = std::move(request_args),
                      deferral = std::move(deferral)](bool allow) mutable {
