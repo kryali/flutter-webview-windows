@@ -104,13 +104,11 @@ WebviewWindowsPlugin::WebviewWindowsPlugin(flutter::TextureRegistrar* textures,
 }
 
 WebviewWindowsPlugin::~WebviewWindowsPlugin() {
-  // Flutter clears the messenger's engine pointer before plugin destruction.
-  // Do not invoke channel or texture registrar APIs after that point; the
-  // dying engine will discard their registrations itself.
+  // Flutter can clear the engine pointer before invoking plugin destructors.
+  // Do not touch channel or texture-registrar APIs here: even an availability
+  // check cannot make a subsequent channel call safe during engine teardown.
+  // The dying engine discards the registrations itself.
   webview_windows::SetPluginAlive(false);
-  if (webview_windows::EngineAvailable() && channel_) {
-    channel_->SetMethodCallHandler(nullptr);
-  }
   instances_.clear();
   UnregisterClass(window_class_.lpszClassName, nullptr);
 }
