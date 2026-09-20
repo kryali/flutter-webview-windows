@@ -1381,7 +1381,8 @@ void Webview::SetInterceptedAcceleratorKeys(
 void Webview::FocusBeforePointerDown() {
   POINT point{};
   if (!GetCursorPos(&point)) return;
-  HWND window = GetAncestor(WindowFromPoint(point), GA_ROOT);
+  HWND input_window = WindowFromPoint(point);
+  HWND window = GetAncestor(input_window, GA_ROOT);
   DWORD process_id = 0;
   if (!window || !GetWindowThreadProcessId(window, &process_id) ||
       process_id != GetCurrentProcessId()) {
@@ -1390,12 +1391,13 @@ void Webview::FocusBeforePointerDown() {
   // Derive the texture origin from the physical cursor and WebView-local
   // position. This also handles textures transferred to another Flutter HWND.
   POINT origin = point;
-  if (!ScreenToClient(window, &origin)) return;
+  if (!input_window || !ScreenToClient(input_window, &origin)) return;
   origin.x -= last_cursor_pos_.x;
   origin.y -= last_cursor_pos_.y;
   HWND parent = nullptr;
   webview_controller_->get_ParentWindow(&parent);
-  if (parent != window && FAILED(webview_controller_->put_ParentWindow(window))) {
+  if (parent != input_window &&
+      FAILED(webview_controller_->put_ParentWindow(input_window))) {
     return;
   }
   RECT bounds{};
