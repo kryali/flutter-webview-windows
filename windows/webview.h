@@ -334,6 +334,8 @@ class Webview {
   }
 
  private:
+  void FocusBeforePointerDown();
+
   HWND hwnd_;
   bool owns_window_;
   bool is_valid_ = false;

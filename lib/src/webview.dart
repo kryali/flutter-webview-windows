@@ -1070,6 +1070,8 @@ class _WebviewState extends State<Webview> {
                     },
                     onPointerDown: (ev) {
                       _pointerKind = ev.kind;
+                      // Update position before either mouse or touch down.
+                      _controller._setCursorPos(ev.localPosition);
                       if (ev.kind == PointerDeviceKind.touch) {
                         _controller._setPointerUpdate(
                             WebviewPointerEventKind.down,

@@ -1186,12 +1186,12 @@ void Webview::SetSurfaceSize(size_t width, size_t height, float scale_factor) {
     auto scaled_width = width * scale_factor;
     auto scaled_height = height * scale_factor;
 
-    const LONG kBoundsOffset = -32000;
-    RECT bounds;
-    bounds.left = kBoundsOffset;
-    bounds.top = kBoundsOffset;
-    bounds.right = kBoundsOffset + static_cast<LONG>(scaled_width);
-    bounds.bottom = kBoundsOffset + static_cast<LONG>(scaled_height);
+    // Bounds must describe the visible texture, not an off-screen sentinel:
+    // WebView2 uses these coordinates to place native select popups.
+    RECT bounds{};
+    webview_controller_->get_Bounds(&bounds);
+    bounds.right = bounds.left + static_cast<LONG>(scaled_width);
+    bounds.bottom = bounds.top + static_cast<LONG>(scaled_height);
 
     surface_->put_Size({scaled_width, scaled_height});
     webview_controller_->put_RasterizationScale(scale_factor);
@@ -1375,6 +1375,44 @@ void Webview::SetInterceptedAcceleratorKeys(
   intercepted_accelerator_keys_ = std::move(accelerator_keys);
 }
 
+// Texture input arrives through Flutter, so activate its actual host window
+// and focus WebView2 synchronously before dispatching the press. Doing this
+// from a Dart ancestor listener can change focus after the popup has opened.
+void Webview::FocusBeforePointerDown() {
+  POINT point{};
+  if (!GetCursorPos(&point)) return;
+  HWND window = GetAncestor(WindowFromPoint(point), GA_ROOT);
+  DWORD process_id = 0;
+  if (!window || !GetWindowThreadProcessId(window, &process_id) ||
+      process_id != GetCurrentProcessId()) {
+    return;
+  }
+  // Derive the texture origin from the physical cursor and WebView-local
+  // position. This also handles textures transferred to another Flutter HWND.
+  POINT origin = point;
+  if (!ScreenToClient(window, &origin)) return;
+  origin.x -= last_cursor_pos_.x;
+  origin.y -= last_cursor_pos_.y;
+  HWND parent = nullptr;
+  webview_controller_->get_ParentWindow(&parent);
+  if (parent != window && FAILED(webview_controller_->put_ParentWindow(window))) {
+    return;
+  }
+  RECT bounds{};
+  if (SUCCEEDED(webview_controller_->get_Bounds(&bounds))) {
+    const LONG width = bounds.right - bounds.left;
+    const LONG height = bounds.bottom - bounds.top;
+    bounds = {origin.x, origin.y, origin.x + width, origin.y + height};
+    webview_controller_->put_Bounds(bounds);
+  }
+  webview_controller_->NotifyParentWindowPositionChanged();
+  if (GetForegroundWindow() != window) {
+    SetForegroundWindow(window);
+    SetActiveWindow(window);
+  }
+  RequestFocus();
+}
+
 bool Webview::RequestFocus() {
   return IsValid() &&
          SUCCEEDED(webview_controller_->MoveFocus(
@@ -1444,6 +1482,7 @@ void Webview::SetPointerUpdate(int32_t pointer,
       event = COREWEBVIEW2_POINTER_EVENT_KIND_ACTIVATE;
       break;
     case WebviewPointerEventKind::Down:
+      FocusBeforePointerDown();
       event = COREWEBVIEW2_POINTER_EVENT_KIND_DOWN;
       pointerFlags =
           POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
@@ -1500,6 +1539,8 @@ void Webview::SetPointerButtonState(WebviewPointerButton button, bool is_down) {
   if (!IsValid()) {
     return;
   }
+
+  if (is_down) FocusBeforePointerDown();
 
   COREWEBVIEW2_MOUSE_EVENT_KIND kind;
   switch (button) {
@@ -1805,4 +1846,4 @@ void Webview::UpdateDownloadProgress(ICoreWebView2DownloadOperation* download) {
           })
           .Get(),
       &event_registrations_.download_state_changed_token_);
-}
+}

@@ -52,7 +52,7 @@ class WebviewWindowsPlugin : public flutter::Plugin {
   static void RegisterWithRegistrar(flutter::PluginRegistrarWindows* registrar);
 
   WebviewWindowsPlugin(flutter::TextureRegistrar* textures,
-                       flutter::BinaryMessenger* messenger);
+                       flutter::BinaryMessenger* messenger, HWND parent_window);
 
   virtual ~WebviewWindowsPlugin();
 
@@ -62,9 +62,9 @@ class WebviewWindowsPlugin : public flutter::Plugin {
   std::unique_ptr<WebviewHost> webview_host_;
   std::unordered_map<int64_t, std::unique_ptr<WebviewBridge>> instances_;
 
-  WNDCLASS window_class_ = {};
   flutter::TextureRegistrar* textures_;
   flutter::BinaryMessenger* messenger_;
+  HWND parent_window_;
 
   bool InitPlatform();
 
@@ -80,7 +80,8 @@ class WebviewWindowsPlugin : public flutter::Plugin {
 void WebviewWindowsPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows* registrar) {
   auto plugin = std::make_unique<WebviewWindowsPlugin>(
-      registrar->texture_registrar(), registrar->messenger());
+      registrar->texture_registrar(), registrar->messenger(),
+      registrar->GetView() ? registrar->GetView()->GetNativeWindow() : nullptr);
 
   plugin->channel_ =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
@@ -94,12 +95,10 @@ void WebviewWindowsPlugin::RegisterWithRegistrar(
   registrar->AddPlugin(std::move(plugin));
 }
 
-WebviewWindowsPlugin::WebviewWindowsPlugin(flutter::TextureRegistrar* textures,
-                                           flutter::BinaryMessenger* messenger)
-    : textures_(textures), messenger_(messenger) {
-  window_class_.lpszClassName = L"FlutterWebviewMessage";
-  window_class_.lpfnWndProc = &DefWindowProc;
-  RegisterClass(&window_class_);
+WebviewWindowsPlugin::WebviewWindowsPlugin(
+    flutter::TextureRegistrar* textures, flutter::BinaryMessenger* messenger,
+    HWND parent_window)
+    : textures_(textures), messenger_(messenger), parent_window_(parent_window) {
   webview_windows::SetPluginAlive(true);
 }
 
@@ -110,7 +109,6 @@ WebviewWindowsPlugin::~WebviewWindowsPlugin() {
   // The dying engine discards the registrations itself.
   webview_windows::SetPluginAlive(false);
   instances_.clear();
-  UnregisterClass(window_class_.lpszClassName, nullptr);
 }
 
 void WebviewWindowsPlugin::HandleMethodCall(
@@ -201,6 +199,11 @@ void WebviewWindowsPlugin::CreateWebviewInstance(
                          "The platform is not supported");
   }
 
+  if (!parent_window_ || !IsWindow(parent_window_)) {
+    return result->Error(kErrorCodeWebviewCreationFailed,
+                         "A native Flutter host window is required.");
+  }
+
   if (!webview_host_) {
     webview_host_ = std::move(WebviewHost::Create(
         platform_.get(), platform_->GetDefaultDataDirectory()));
@@ -209,14 +212,11 @@ void WebviewWindowsPlugin::CreateWebviewInstance(
     }
   }
 
-  auto hwnd =
-      CreateWindowEx(0, window_class_.lpszClassName, L"", 0, 0, 0, 0, 0,
-                     HWND_MESSAGE, nullptr, window_class_.hInstance, nullptr);
-
   std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>>
       shared_result = std::move(result);
+  // Flutter owns the parent HWND; disposing a WebView must not destroy it.
   webview_host_->CreateWebview(
-      hwnd, true, true,
+      parent_window_, true, false,
       [shared_result, this](std::unique_ptr<Webview> webview,
                             std::unique_ptr<WebviewCreationError> error) {
         if (!webview) {
