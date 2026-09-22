@@ -698,7 +698,10 @@ bool Webview::CreateSurface(
   }
 
   surface_ = root.try_as<ABI::Windows::UI::Composition::IVisual>();
-  assert(surface_);
+  if (!surface_) {
+    std::cerr << "Querying IVisual from container visual failed." << std::endl;
+    return false;
+  }
 
   // initial size. doesn't matter as we resize the surface anyway.
   surface_->put_Size({1280, 720});

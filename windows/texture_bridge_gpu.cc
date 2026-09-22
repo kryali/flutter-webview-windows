@@ -54,7 +54,12 @@ void TextureBridgeGpu::EnsureSurface(uint32_t width, uint32_t height) {
 
     HANDLE shared_handle;
     surface_.try_as(dxgi_surface_);
-    assert(dxgi_surface_);
+    if (!dxgi_surface_) {
+      std::cerr << "Querying IDXGIResource from intermediate texture failed."
+                << std::endl;
+      surface_ = nullptr;
+      return;
+    }
     dxgi_surface_->GetSharedHandle(&shared_handle);
 
     surface_descriptor_.handle = shared_handle;
