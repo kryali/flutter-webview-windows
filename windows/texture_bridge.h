@@ -51,6 +51,11 @@ class TextureBridge {
   SurfaceSizeChangedCallback surface_size_changed_;
   std::atomic<bool> needs_update_ = false;
   winrt::com_ptr<ID3D11Texture2D> last_frame_;
+  // Set whenever last_frame_ is updated with a new frame, cleared once a
+  // subclass has copied it out. Lets GetSurfaceDescriptor skip re-copying
+  // last_frame_ when the engine pulls the surface more than once between
+  // captured frames.
+  bool frame_dirty_ = false;
   std::optional<std::chrono::high_resolution_clock::time_point>
       last_frame_timestamp_;
 

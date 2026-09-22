@@ -78,8 +78,12 @@ TextureBridgeGpu::GetSurfaceDescriptor(size_t width, size_t height) {
     return nullptr;
   }
 
-  if (last_frame_) {
+  // The engine may pull the surface descriptor more than once for the same
+  // captured frame (e.g. repeated composited passes); only re-copy when a
+  // new frame has arrived or the destination surface doesn't exist yet.
+  if (last_frame_ && (frame_dirty_ || !surface_)) {
     ProcessFrame(last_frame_);
+    frame_dirty_ = false;
   }
 
   if (surface_) {
