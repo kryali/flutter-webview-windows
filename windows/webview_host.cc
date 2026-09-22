@@ -14,12 +14,17 @@ std::unique_ptr<WebviewHost> WebviewHost::Create(
     WebviewPlatform* platform, std::optional<std::wstring> user_data_directory,
     std::optional<std::wstring> browser_exe_path,
     std::optional<std::string> arguments) {
-  wil::com_ptr<CoreWebView2EnvironmentOptions> opts;
+  wil::com_ptr<CoreWebView2EnvironmentOptions> opts =
+      Microsoft::WRL::Make<CoreWebView2EnvironmentOptions>();
+  // This plugin's content is captured off a composition visual and never
+  // presented to a real display, so pacing Chromium's compositor to a vsync
+  // signal only adds latency and burns GPU cycles for no visible benefit.
+  // The delivered frame rate is controlled separately via setFpsLimit.
+  std::wstring warguments = L"--disable-gpu-vsync";
   if (arguments.has_value()) {
-    opts = Microsoft::WRL::Make<CoreWebView2EnvironmentOptions>();
-    std::wstring warguments(arguments.value().begin(), arguments.value().end());
-    opts->put_AdditionalBrowserArguments(warguments.c_str());
+    warguments += L" " + std::wstring(arguments->begin(), arguments->end());
   }
+  opts->put_AdditionalBrowserArguments(warguments.c_str());
 
   std::promise<HRESULT> result_promise;
   wil::com_ptr<ICoreWebView2Environment> env;
