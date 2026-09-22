@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <cassert>
 #include <iostream>
 
 #include "util/direct3d11.interop.h"
@@ -21,7 +20,15 @@ TextureBridge::TextureBridge(GraphicsContext* graphics_context,
     : graphics_context_(graphics_context) {
   capture_item_ =
       graphics_context_->CreateGraphicsCaptureItemFromVisual(visual);
-  assert(capture_item_);
+  if (!capture_item_) {
+    // assert() is compiled out in the Release builds this plugin actually
+    // ships, so this must be a real check: Start() already tolerates a null
+    // capture_item_, but without this early return the add_Closed call below
+    // would dereference it unconditionally.
+    std::cerr << "Creating GraphicsCaptureItem from visual failed."
+              << std::endl;
+    return;
+  }
 
   capture_item_->add_Closed(
       Microsoft::WRL::Callback<ABI::Windows::Foundation::ITypedEventHandler<
@@ -65,7 +72,10 @@ bool TextureBridge::Start() {
       static_cast<ABI::Windows::Graphics::DirectX::DirectXPixelFormat>(
           kPixelFormat),
       kNumBuffers, size);
-  assert(frame_pool_);
+  if (!frame_pool_) {
+    std::cerr << "Creating Direct3D11CaptureFramePool failed." << std::endl;
+    return false;
+  }
 
   frame_pool_->add_FrameArrived(
       Microsoft::WRL::Callback<ABI::Windows::Foundation::ITypedEventHandler<
@@ -116,8 +126,11 @@ void TextureBridge::StopInternal() {
   if (capture_session_) {
     auto closable =
         capture_session_.try_as<ABI::Windows::Foundation::IClosable>();
-    assert(closable);
-    closable->Close();
+    if (closable) {
+      closable->Close();
+    } else {
+      std::cerr << "Capture session does not support IClosable." << std::endl;
+    }
     capture_session_ = nullptr;
   }
 }
