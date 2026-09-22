@@ -1248,18 +1248,19 @@ class _WebviewFpsOverlayState extends State<_WebviewFpsOverlay> {
     if (!mounted || counts == null) {
       return;
     }
+    final newCounts = counts;
     final elapsed = _stopwatch.elapsedMicroseconds / 1e6;
     _stopwatch
       ..reset()
       ..start();
     final last = _lastCounts;
-    _lastCounts = counts;
+    _lastCounts = newCounts;
     if (last == null || elapsed <= 0) {
       return;
     }
     setState(() {
-      _renderedFps = (counts.rendered - last.rendered) / elapsed;
-      _capturedFps = (counts.captured - last.captured) / elapsed;
+      _renderedFps = (newCounts.rendered - last.rendered) / elapsed;
+      _capturedFps = (newCounts.captured - last.captured) / elapsed;
     });
   }
 
