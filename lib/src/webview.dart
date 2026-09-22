@@ -987,12 +987,21 @@ class Webview extends StatefulWidget {
   /// `showFpsOverlay: kDebugMode`. See [WebviewController.setShowFpsOverlay].
   final bool showFpsOverlay;
 
+  /// Whether this webview should be shown as soon as it's ready. Set this
+  /// to `false` for a tab that's opening in the background (e.g. a
+  /// Ctrl-click), or it will briefly force itself to the front the moment
+  /// it loads, ahead of anything you do afterwards to hide it again. This
+  /// only affects that one first reveal -- call
+  /// [WebviewController.setVisible] as normal for everything after.
+  final bool visible;
+
   const Webview(this.controller,
       {this.width,
       this.height,
       this.permissionRequested,
       this.scaleFactor,
-      this.showFpsOverlay = false});
+      this.showFpsOverlay = false,
+      this.visible = true});
 
   @override
   _WebviewState createState() => _WebviewState();
@@ -1056,7 +1065,7 @@ class _WebviewState extends State<Webview> {
           position, box.size, widget.scaleFactor ?? window.devicePixelRatio));
       if (!_madeVisible) {
         _madeVisible = true;
-        unawaited(_controller.setVisible(true));
+        unawaited(_controller.setVisible(widget.visible));
         if (widget.showFpsOverlay) {
           unawaited(_controller.setShowFpsOverlay(true));
         }
