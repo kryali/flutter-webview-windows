@@ -10,7 +10,10 @@
 #include "util/direct3d11.interop.h"
 
 namespace {
-const int kNumBuffers = 1;
+// 2 buffers give WGC one frame of slack so it isn't forced to stall waiting
+// for the consumer to release the frame currently in use, at the cost of
+// a small amount of added latency.
+const int kNumBuffers = 2;
 }  // namespace
 
 TextureBridge::TextureBridge(GraphicsContext* graphics_context,
@@ -49,7 +52,9 @@ bool TextureBridge::Start() {
   ABI::Windows::Graphics::SizeInt32 size;
   capture_item_->get_Size(&size);
 
-  frame_pool_ = graphics_context_->CreateCaptureFramePool(
+  // Free-threaded: FrameArrived is delivered on an arbitrary pool thread
+  // instead of requiring (and blocking) this thread's DispatcherQueue.
+  frame_pool_ = graphics_context_->CreateFreeThreadedCaptureFramePool(
       graphics_context_->device(),
       static_cast<ABI::Windows::Graphics::DirectX::DirectXPixelFormat>(
           kPixelFormat),
@@ -133,6 +138,9 @@ void TextureBridge::OnFrameArrived() {
         last_frame_ =
             util::TryGetDXGIInterfaceFromObject<ID3D11Texture2D>(frame_surface);
         has_frame = !ShouldDropFrame();
+        if (has_frame) {
+          frame_dirty_ = true;
+        }
       }
     }
 
