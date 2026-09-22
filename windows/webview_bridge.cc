@@ -3,10 +3,10 @@
 #include <flutter/event_stream_handler_functions.h>
 #include <flutter/method_result_functions.h>
 
+#include <atomic>
 #include <format>
 
 #include "engine_availability.h"
-#include "texture_bridge_gpu.h"
 
 namespace {
 constexpr auto kErrorInvalidArgs = "invalidArguments";
@@ -24,13 +24,12 @@ constexpr auto kMethodRemoveScriptToExecuteOnDocumentCreated =
 constexpr auto kMethodExecuteScript = "executeScript";
 constexpr auto kMethodPostWebMessage = "postWebMessage";
 constexpr auto kMethodSetSize = "setSize";
-constexpr auto kMethodSetCursorPos = "setCursorPos";
-constexpr auto kMethodSetPointerUpdate = "setPointerUpdate";
-constexpr auto kMethodSetPointerButton = "setPointerButton";
-constexpr auto kMethodSetScrollDelta = "setScrollDelta";
+constexpr auto kMethodSetVisible = "setVisible";
+constexpr auto kMethodSetParentWindow = "setParentWindow";
 constexpr auto kMethodSetUserAgent = "setUserAgent";
 constexpr auto kMethodSetBackgroundColor = "setBackgroundColor";
 constexpr auto kMethodSetZoomFactor = "setZoomFactor";
+constexpr auto kMethodSetShowFpsOverlay = "setShowFpsOverlay";
 constexpr auto kMethodOpenDevTools = "openDevTools";
 constexpr auto kMethodSuspend = "suspend";
 constexpr auto kMethodResume = "resume";
@@ -46,8 +45,6 @@ constexpr auto kMethodSetPopupWindowPolicy = "setPopupWindowPolicy";
 constexpr auto kMethodSetNavigationBlocklist = "setNavigationBlocklist";
 constexpr auto kMethodSetNewWindowDelegateEnabled =
     "setNewWindowDelegateEnabled";
-constexpr auto kMethodSetFpsLimit = "setFpsLimit";
-constexpr auto kMethodGetFrameCounts = "getFrameCounts";
 constexpr auto kMethodSetInterceptedAcceleratorKeys =
     "setInterceptedAcceleratorKeys";
 constexpr auto kMethodRequestFocus = "requestFocus";
@@ -58,21 +55,6 @@ constexpr auto kEventValue = "value";
 constexpr auto kErrorNotSupported = "not_supported";
 constexpr auto kScriptFailed = "script_failed";
 constexpr auto kMethodFailed = "method_failed";
-
-static const std::optional<std::pair<double, double>> GetPointFromArgs(
-    const flutter::EncodableValue* args) {
-  const flutter::EncodableList* list =
-      std::get_if<flutter::EncodableList>(args);
-  if (!list || list->size() != 2) {
-    return std::nullopt;
-  }
-  const auto x = std::get_if<double>(&(*list)[0]);
-  const auto y = std::get_if<double>(&(*list)[1]);
-  if (!x || !y) {
-    return std::nullopt;
-  }
-  return std::make_pair(*x, *y);
-}
 
 static const std::optional<std::vector<WebviewAcceleratorKey>>
 GetAcceleratorKeys(const flutter::EncodableValue* args) {
@@ -132,105 +114,23 @@ static const std::optional<std::vector<std::string>> GetStringListFromMap(
   return values;
 }
 
-static const std::optional<std::tuple<double, double, double>>
-GetPointAndScaleFactorFromArgs(const flutter::EncodableValue* args) {
-  const flutter::EncodableList* list =
-      std::get_if<flutter::EncodableList>(args);
-  if (!list || list->size() != 3) {
-    return std::nullopt;
-  }
-  const auto x = std::get_if<double>(&(*list)[0]);
-  const auto y = std::get_if<double>(&(*list)[1]);
-  const auto z = std::get_if<double>(&(*list)[2]);
-  if (!x || !y || !z) {
-    return std::nullopt;
-  }
-  return std::make_tuple(*x, *y, *z);
+}  // namespace
+
+namespace {
+// A plain per-process counter for channel naming -- no longer sourced from
+// flutter::TextureRegistrar, since this webview isn't registered as a
+// Flutter texture anymore.
+int64_t NextWebviewId() {
+  static std::atomic<int64_t> next_id{0};
+  return next_id.fetch_add(1);
 }
-
-static const std::string& GetCursorName(const HCURSOR cursor) {
-  // The cursor names correspond to the Flutter Engine names:
-  // in shell/platform/windows/flutter_window_win32.cc
-  static const std::string kDefaultCursorName = "basic";
-  static const std::pair<std::string, const wchar_t*> mappings[] = {
-      {"allScroll", IDC_SIZEALL},
-      {kDefaultCursorName, IDC_ARROW},
-      {"click", IDC_HAND},
-      {"forbidden", IDC_NO},
-      {"help", IDC_HELP},
-      {"move", IDC_SIZEALL},
-      {"none", nullptr},
-      {"noDrop", IDC_NO},
-      {"precise", IDC_CROSS},
-      {"progress", IDC_APPSTARTING},
-      {"text", IDC_IBEAM},
-      {"resizeColumn", IDC_SIZEWE},
-      {"resizeDown", IDC_SIZENS},
-      {"resizeDownLeft", IDC_SIZENESW},
-      {"resizeDownRight", IDC_SIZENWSE},
-      {"resizeLeft", IDC_SIZEWE},
-      {"resizeLeftRight", IDC_SIZEWE},
-      {"resizeRight", IDC_SIZEWE},
-      {"resizeRow", IDC_SIZENS},
-      {"resizeUp", IDC_SIZENS},
-      {"resizeUpDown", IDC_SIZENS},
-      {"resizeUpLeft", IDC_SIZENWSE},
-      {"resizeUpRight", IDC_SIZENESW},
-      {"resizeUpLeftDownRight", IDC_SIZENWSE},
-      {"resizeUpRightDownLeft", IDC_SIZENESW},
-      {"wait", IDC_WAIT},
-  };
-
-  static std::map<HCURSOR, std::string> cursors;
-  static bool initialized = false;
-
-  if (!initialized) {
-    initialized = true;
-    for (const auto& pair : mappings) {
-      HCURSOR cursor_handle = LoadCursor(nullptr, pair.second);
-      if (cursor_handle) {
-        cursors[cursor_handle] = pair.first;
-      }
-    }
-  }
-
-  const auto it = cursors.find(cursor);
-  if (it != cursors.end()) {
-    return it->second;
-  }
-  return kDefaultCursorName;
-}
-
 }  // namespace
 
 WebviewBridge::WebviewBridge(flutter::BinaryMessenger* messenger,
-                             flutter::TextureRegistrar* texture_registrar,
-                             GraphicsContext* graphics_context,
                              std::unique_ptr<Webview> webview)
-    : webview_(std::move(webview)), texture_registrar_(texture_registrar) {
-  texture_bridge_ =
-      std::make_unique<TextureBridgeGpu>(graphics_context, webview_->surface());
-
-  flutter_texture_ =
-      std::make_unique<flutter::TextureVariant>(flutter::GpuSurfaceTexture(
-          kFlutterDesktopGpuSurfaceTypeDxgiSharedHandle,
-          [bridge = static_cast<TextureBridgeGpu*>(texture_bridge_.get())](
-              size_t width,
-              size_t height) -> const FlutterDesktopGpuSurfaceDescriptor* {
-            return bridge->GetSurfaceDescriptor(width, height);
-          }));
-
-  texture_id_ = texture_registrar->RegisterTexture(flutter_texture_.get());
-  texture_bridge_->SetOnFrameAvailable([this]() {
-    webview_windows::IfEngineAvailableLocked(
-        [this]() { texture_registrar_->MarkTextureFrameAvailable(texture_id_); });
-  });
-  // texture_bridge_->SetOnSurfaceSizeChanged([this](Size size) {
-  //  webview_->SetSurfaceSize(size.width, size.height);
-  //});
-
+    : webview_(std::move(webview)), webview_id_(NextWebviewId()) {
   const auto method_channel_name =
-      std::format("io.jns.webview.win/{}", texture_id_);
+      std::format("io.jns.webview.win/{}", webview_id_);
   method_channel_ =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
           messenger, method_channel_name,
@@ -240,7 +140,7 @@ WebviewBridge::WebviewBridge(flutter::BinaryMessenger* messenger,
   });
 
   const auto event_channel_name =
-      std::format("io.jns.webview.win/{}/events", texture_id_);
+      std::format("io.jns.webview.win/{}/events", webview_id_);
   event_channel_ =
       std::make_unique<flutter::EventChannel<flutter::EncodableValue>>(
           messenger, event_channel_name,
@@ -269,16 +169,8 @@ void WebviewBridge::Dispose(std::function<void()> completion) {
   method_channel_->SetMethodCallHandler(nullptr);
   event_channel_->SetStreamHandler(nullptr);
   event_sink_.reset();
-  texture_bridge_->Stop();
   webview_->Close();
-
-  texture_registrar_->UnregisterTexture(
-      texture_id_, [this, completion = std::move(completion)]() mutable {
-        // The engine no longer references flutter_texture_, so the texture and
-        // its captured TextureBridge pointer can now be released safely.
-        flutter_texture_.reset();
-        completion();
-      });
+  completion();
 }
 
 void WebviewBridge::RegisterEventHandlers() {
@@ -364,19 +256,6 @@ void WebviewBridge::RegisterEventHandlers() {
          flutter::EncodableValue("titleChanged")},
         {flutter::EncodableValue(kEventValue), flutter::EncodableValue(title)},
     });
-    EmitEvent(event);
-  });
-
-  webview_->OnSurfaceSizeChanged([this](size_t width, size_t height) {
-    texture_bridge_->NotifySurfaceSizeChanged();
-  });
-
-  webview_->OnCursorChanged([this](const HCURSOR cursor) {
-    const auto& name = GetCursorName(cursor);
-    const auto event = flutter::EncodableValue(
-        flutter::EncodableMap{{flutter::EncodableValue(kEventType),
-                               flutter::EncodableValue("cursorChanged")},
-                              {flutter::EncodableValue(kEventValue), name}});
     EmitEvent(event);
   });
 
@@ -553,81 +432,56 @@ void WebviewBridge::HandleMethodCall(
     return result->Error(kMethodFailed, "Requesting focus failed.");
   }
 
-  // setCursorPos: [double x, double y]
-  if (method_name.compare(kMethodSetCursorPos) == 0) {
-    const auto point = GetPointFromArgs(method_call.arguments());
-    if (point) {
-      webview_->SetCursorPos(point->first, point->second);
-      return result->Success();
-    }
-    return result->Error(kErrorInvalidArgs);
-  }
-
-  // setPointerUpdate:
-  // [int pointer, int event, double x, double y, double size, double pressure]
-  if (method_name.compare(kMethodSetPointerUpdate) == 0) {
+  // setSize: [double x, double y, double width, double height, double scale_factor]
+  // x/y are relative to the parent window's client area -- see
+  // Webview::SetBounds.
+  if (method_name.compare(kMethodSetSize) == 0) {
     const flutter::EncodableList* list =
         std::get_if<flutter::EncodableList>(method_call.arguments());
-    if (!list || list->size() != 6) {
+    if (!list || list->size() != 5) {
       return result->Error(kErrorInvalidArgs);
     }
-
-    const auto pointer = std::get_if<int32_t>(&(*list)[0]);
-    const auto event = std::get_if<int32_t>(&(*list)[1]);
-    const auto x = std::get_if<double>(&(*list)[2]);
-    const auto y = std::get_if<double>(&(*list)[3]);
-    const auto size = std::get_if<double>(&(*list)[4]);
-    const auto pressure = std::get_if<double>(&(*list)[5]);
-
-    if (pointer && event && x && y && size && pressure) {
-      webview_->SetPointerUpdate(*pointer,
-                                 static_cast<WebviewPointerEventKind>(*event),
-                                 *x, *y, *size, *pressure);
+    const auto x = std::get_if<double>(&(*list)[0]);
+    const auto y = std::get_if<double>(&(*list)[1]);
+    const auto width = std::get_if<double>(&(*list)[2]);
+    const auto height = std::get_if<double>(&(*list)[3]);
+    const auto scale_factor = std::get_if<double>(&(*list)[4]);
+    if (x && y && width && height && scale_factor) {
+      webview_->SetBounds(static_cast<long>(*x), static_cast<long>(*y),
+                          static_cast<size_t>(*width),
+                          static_cast<size_t>(*height),
+                          static_cast<float>(*scale_factor));
       return result->Success();
     }
     return result->Error(kErrorInvalidArgs);
   }
 
-  // setScrollDelta: [double dx, double dy]
-  if (method_name.compare(kMethodSetScrollDelta) == 0) {
-    const auto delta = GetPointFromArgs(method_call.arguments());
-    if (delta) {
-      webview_->SetScrollDelta(delta->first, delta->second);
+  // setVisible: bool
+  if (method_name.compare(kMethodSetVisible) == 0) {
+    if (const auto visible = std::get_if<bool>(method_call.arguments())) {
+      webview_->SetVisible(*visible);
       return result->Success();
     }
     return result->Error(kErrorInvalidArgs);
   }
 
-  // setPointerButton: {"button": int, "isDown": bool}
-  if (method_name.compare(kMethodSetPointerButton) == 0) {
-    const auto& map = std::get<flutter::EncodableMap>(*method_call.arguments());
-
-    const auto button = map.find(flutter::EncodableValue("button"));
-    const auto isDown = map.find(flutter::EncodableValue("isDown"));
-    if (button != map.end() && isDown != map.end()) {
-      const auto buttonValue = std::get_if<int32_t>(&button->second);
-      const auto isDownValue = std::get_if<bool>(&isDown->second);
-      if (buttonValue && isDownValue) {
-        webview_->SetPointerButtonState(
-            static_cast<WebviewPointerButton>(*buttonValue), *isDownValue);
-        return result->Success();
-      }
+  // setParentWindow: int (raw HWND value, e.g. a native window's handle
+  // reinterpret_cast through intptr_t to an int64 on the Dart side). The
+  // standard codec encodes a small Dart int as int32 rather than int64 --
+  // window handles are often small enough to hit this -- so both must be
+  // accepted or the call fails with invalidArguments for small HWNDs.
+  if (method_name.compare(kMethodSetParentWindow) == 0) {
+    std::optional<int64_t> handle;
+    if (const auto handle64 = std::get_if<int64_t>(method_call.arguments())) {
+      handle = *handle64;
+    } else if (const auto handle32 =
+                   std::get_if<int32_t>(method_call.arguments())) {
+      handle = *handle32;
     }
-    return result->Error(kErrorInvalidArgs);
-  }
-
-  // setSize: [double width, double height, double scale_factor]
-  if (method_name.compare(kMethodSetSize) == 0) {
-    auto size = GetPointAndScaleFactorFromArgs(method_call.arguments());
-    if (size) {
-      const auto [width, height, scale_factor] = size.value();
-
-      webview_->SetSurfaceSize(static_cast<size_t>(width),
-                               static_cast<size_t>(height),
-                               static_cast<float>(scale_factor));
-
-      texture_bridge_->Start();
-      return result->Success();
+    if (handle) {
+      const auto new_parent =
+          reinterpret_cast<HWND>(static_cast<intptr_t>(*handle));
+      return result->Success(webview_->SetParentWindow(new_parent));
     }
     return result->Error(kErrorInvalidArgs);
   }
@@ -685,7 +539,6 @@ void WebviewBridge::HandleMethodCall(
 
   // suspend
   if (method_name.compare(kMethodSuspend) == 0) {
-    texture_bridge_->Stop();
     webview_->Suspend();
     return result->Success();
   }
@@ -693,7 +546,6 @@ void WebviewBridge::HandleMethodCall(
   // resume
   if (method_name.compare(kMethodResume) == 0) {
     webview_->Resume();
-    texture_bridge_->Start();
     return result->Success();
   }
 
@@ -825,6 +677,18 @@ void WebviewBridge::HandleMethodCall(
       }
       return result->Error(kErrorNotSupported,
                            "Setting the zoom factor failed.");
+    }
+    return result->Error(kErrorInvalidArgs);
+  }
+
+  // setShowFpsOverlay: bool
+  if (method_name.compare(kMethodSetShowFpsOverlay) == 0) {
+    if (const auto show = std::get_if<bool>(method_call.arguments())) {
+      if (webview_->SetShowFpsOverlay(*show)) {
+        return result->Success();
+      }
+      return result->Error(kErrorNotSupported,
+                           "Setting the FPS overlay failed.");
     }
     return result->Error(kErrorInvalidArgs);
   }
@@ -1023,24 +887,6 @@ void WebviewBridge::HandleMethodCall(
     }
     webview_->SetNewWindowDelegateEnabled(*enabled);
     return result->Success();
-  }
-
-  if (method_name.compare(kMethodSetFpsLimit) == 0) {
-    if (const auto value = std::get_if<int32_t>(method_call.arguments())) {
-      texture_bridge_->SetFpsLimit(*value == 0 ? std::nullopt
-                                               : std::make_optional(*value));
-      return result->Success();
-    }
-  }
-
-  if (method_name.compare(kMethodGetFrameCounts) == 0) {
-    const auto counts = texture_bridge_->GetFrameCounts();
-    return result->Success(flutter::EncodableValue(flutter::EncodableMap{
-        {flutter::EncodableValue("captured"),
-         flutter::EncodableValue(static_cast<int64_t>(counts.captured))},
-        {flutter::EncodableValue("rendered"),
-         flutter::EncodableValue(static_cast<int64_t>(counts.rendered))},
-    }));
   }
 
   result->NotImplemented();

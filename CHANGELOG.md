@@ -1,7 +1,11 @@
 ## Unreleased
 
+* **Breaking:** Switch from offscreen composition + `Windows.Graphics.Capture` texture rendering to native windowed hosting (`ICoreWebView2Controller`), removing the GPU capture/copy pipeline and all synthetic pointer/cursor input forwarding. See the README's Limitations section.
+  * Removed: `Webview.filterQuality`, `WebviewController.setFpsLimit`, and the `PointerButton`/`WebviewPointerEventKind` enums (no longer meaningful -- input is now delivered natively).
+  * Added: `WebviewController.setVisible` to show/hide a webview that stays alive off-screen (e.g. an inactive tab behind an `IndexedStack`), since native windowed content isn't hidden automatically just because its Flutter widget isn't painted.
+  * Added: `WebviewController.setParentWindow` to move a webview to a different native top-level window (e.g. dragging a tab out to another window), since windowed hosting ties the native content to whichever window it was created under.
+  * Changed: `Webview.showFpsOverlay`/`WebviewController.setShowFpsOverlay` now toggle Chromium's own built-in FPS counter (via the DevTools Protocol) instead of measuring the former capture pipeline's frame counts, which no longer exist. `WebviewController.getFrameCounts` and `WebviewFrameCounts` are removed.
 * Add `WebviewController.setNavigationBlocklist` and `onNavigationBlocked` to cancel navigations to matching URLs before they render, backed by WebView2's `NavigationStarting` event
-* Add `Webview.showFpsOverlay` debug overlay and `WebviewController.getFrameCounts` for measuring the webview's rendered frame rate
 
 ## 0.4.0
 

@@ -5,26 +5,19 @@
 #include <future>
 #include <iostream>
 
-#include "util/rohelper.h"
-
 using namespace Microsoft::WRL;
 
 // static
 std::unique_ptr<WebviewHost> WebviewHost::Create(
-    WebviewPlatform* platform, std::optional<std::wstring> user_data_directory,
+    std::optional<std::wstring> user_data_directory,
     std::optional<std::wstring> browser_exe_path,
     std::optional<std::string> arguments) {
-  wil::com_ptr<CoreWebView2EnvironmentOptions> opts =
-      Microsoft::WRL::Make<CoreWebView2EnvironmentOptions>();
-  // This plugin's content is captured off a composition visual and never
-  // presented to a real display, so pacing Chromium's compositor to a vsync
-  // signal only adds latency and burns GPU cycles for no visible benefit.
-  // The delivered frame rate is controlled separately via setFpsLimit.
-  std::wstring warguments = L"--disable-gpu-vsync";
+  wil::com_ptr<CoreWebView2EnvironmentOptions> opts;
   if (arguments.has_value()) {
-    warguments += L" " + std::wstring(arguments->begin(), arguments->end());
+    opts = Microsoft::WRL::Make<CoreWebView2EnvironmentOptions>();
+    std::wstring warguments(arguments->begin(), arguments->end());
+    opts->put_AdditionalBrowserArguments(warguments.c_str());
   }
-  opts->put_AdditionalBrowserArguments(warguments.c_str());
 
   std::promise<HRESULT> result_promise;
   wil::com_ptr<ICoreWebView2Environment> env;
@@ -46,7 +39,7 @@ std::unique_ptr<WebviewHost> WebviewHost::Create(
       auto webview_env3 = env.try_query<ICoreWebView2Environment3>();
       if (webview_env3) {
         return std::unique_ptr<WebviewHost>(
-            new WebviewHost(platform, std::move(webview_env3)));
+            new WebviewHost(std::move(webview_env3)));
       }
     }
   }
@@ -54,22 +47,17 @@ std::unique_ptr<WebviewHost> WebviewHost::Create(
   return {};
 }
 
-WebviewHost::WebviewHost(WebviewPlatform* platform,
-                         wil::com_ptr<ICoreWebView2Environment3> webview_env)
-    : webview_env_(webview_env) {
-  compositor_ = platform->graphics_context()->CreateCompositor();
-}
+WebviewHost::WebviewHost(wil::com_ptr<ICoreWebView2Environment3> webview_env)
+    : webview_env_(webview_env) {}
 
-void WebviewHost::CreateWebview(HWND hwnd, bool offscreen_only,
-                                bool owns_window,
+void WebviewHost::CreateWebview(HWND hwnd, bool owns_window,
                                 WebviewCreationCallback callback) {
-  CreateWebViewCompositionController(
-      hwnd, [=, self = this](
-                wil::com_ptr<ICoreWebView2CompositionController> controller,
-                std::unique_ptr<WebviewCreationError> error) {
+  CreateWebViewController(
+      hwnd, [=, self = this](wil::com_ptr<ICoreWebView2Controller> controller,
+                             std::unique_ptr<WebviewCreationError> error) {
         if (controller) {
-          std::unique_ptr<Webview> webview(new Webview(
-              std::move(controller), self, hwnd, owns_window, offscreen_only));
+          std::unique_ptr<Webview> webview(
+              new Webview(std::move(controller), self, hwnd, owns_window));
           callback(std::move(webview), nullptr);
         } else {
           callback(nullptr, std::move(error));
@@ -77,46 +65,29 @@ void WebviewHost::CreateWebview(HWND hwnd, bool offscreen_only,
       });
 }
 
-void WebviewHost::CreateWebViewPointerInfo(PointerInfoCreationCallback callback) {
-
-  ICoreWebView2PointerInfo *pointer;
-  auto hr = webview_env_->CreateCoreWebView2PointerInfo(&pointer);
-
-  if (FAILED(hr)) {
-    callback(nullptr, WebviewCreationError::create(hr, "CreateWebViewPointerInfo failed."));
-  } else if (SUCCEEDED(hr)) {
-    callback(std::move(wil::com_ptr<ICoreWebView2PointerInfo>(pointer)), nullptr);
-  }
-}
-
-void WebviewHost::CreateWebViewCompositionController(
-    HWND hwnd, CompositionControllerCreationCallback callback) {
-  auto hr = webview_env_->CreateCoreWebView2CompositionController(
+void WebviewHost::CreateWebViewController(
+    HWND hwnd, ControllerCreationCallback callback) {
+  auto hr = webview_env_->CreateCoreWebView2Controller(
       hwnd,
-      Callback<
-          ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler>(
+      Callback<ICoreWebView2CreateCoreWebView2ControllerCompletedHandler>(
           [callback](HRESULT hr,
-                     ICoreWebView2CompositionController* compositionController)
-              -> HRESULT {
+                     ICoreWebView2Controller* controller) -> HRESULT {
             if (SUCCEEDED(hr)) {
               callback(
-                  std::move(wil::com_ptr<ICoreWebView2CompositionController>(
-                      compositionController)),
+                  std::move(wil::com_ptr<ICoreWebView2Controller>(controller)),
                   nullptr);
             } else {
               callback(nullptr, WebviewCreationError::create(
                                     hr,
-                                    "CreateCoreWebView2CompositionController "
-                                    "completion handler failed."));
+                                    "CreateCoreWebView2Controller completion "
+                                    "handler failed."));
             }
-
             return S_OK;
           })
           .Get());
 
   if (FAILED(hr)) {
-    callback(nullptr,
-             WebviewCreationError::create(
-                 hr, "CreateCoreWebView2CompositionController failed."));
+    callback(nullptr, WebviewCreationError::create(
+                          hr, "CreateCoreWebView2Controller failed."));
   }
 }

@@ -47,20 +47,4 @@ inline bool EngineAvailable() {
   return available;
 }
 
-// A frame callback can run on the capture thread. Hold the messenger lock for
-// the engine call so its availability cannot change underneath the callback.
-template <typename F>
-inline void IfEngineAvailableLocked(F&& callback) {
-  const auto messenger = MessengerSlot().load(std::memory_order_acquire);
-  if (!messenger) {
-    callback();
-    return;
-  }
-  FlutterDesktopMessengerLock(messenger);
-  if (FlutterDesktopMessengerIsAvailable(messenger)) {
-    callback();
-  }
-  FlutterDesktopMessengerUnlock(messenger);
-}
-
 }  // namespace webview_windows
