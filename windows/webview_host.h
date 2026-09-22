@@ -5,11 +5,11 @@
 #include <wil/com.h>
 
 #include <functional>
+#include <memory>
+#include <optional>
+#include <string>
 
-#include "graphics_context.h"
 #include "webview.h"
-#include "webview_platform.h"
-#include "windows.ui.composition.h"
 
 struct WebviewCreationError {
   HRESULT hr;
@@ -29,39 +29,29 @@ class WebviewHost {
   typedef std::function<void(std::unique_ptr<Webview>,
                              std::unique_ptr<WebviewCreationError>)>
       WebviewCreationCallback;
-  typedef std::function<void(wil::com_ptr<ICoreWebView2CompositionController>,
+  typedef std::function<void(wil::com_ptr<ICoreWebView2Controller>,
                              std::unique_ptr<WebviewCreationError>)>
-      CompositionControllerCreationCallback;
-  typedef std::function<void(wil::com_ptr<ICoreWebView2PointerInfo>,
-                             std::unique_ptr<WebviewCreationError>)>
-      PointerInfoCreationCallback;
+      ControllerCreationCallback;
 
   static std::unique_ptr<WebviewHost> Create(
-      WebviewPlatform* platform,
       std::optional<std::wstring> user_data_directory = std::nullopt,
       std::optional<std::wstring> browser_exe_path = std::nullopt,
       std::optional<std::string> arguments = std::nullopt);
 
-  void CreateWebview(HWND hwnd, bool offscreen_only, bool owns_window,
+  // hwnd is the parent window the controller renders into (a sub-rectangle
+  // of it, via Webview::SetBounds) -- typically Flutter's own top-level
+  // window, shared by every tab's controller and multiplexed with
+  // SetBounds/SetVisible rather than one native window per tab.
+  void CreateWebview(HWND hwnd, bool owns_window,
                      WebviewCreationCallback callback);
-
-  void CreateWebViewPointerInfo(PointerInfoCreationCallback cb);
-
-  winrt::com_ptr<ABI::Windows::UI::Composition::ICompositor> compositor()
-      const {
-    return compositor_;
-  }
 
   // Same environment used to create every Webview's controller, so popup
   // windows created by Webview share cookies/session with their opener.
   ICoreWebView2Environment3* environment() const { return webview_env_.get(); }
 
  private:
-  winrt::com_ptr<ABI::Windows::UI::Composition::ICompositor> compositor_;
   wil::com_ptr<ICoreWebView2Environment3> webview_env_;
 
-  WebviewHost(WebviewPlatform* platform,
-              wil::com_ptr<ICoreWebView2Environment3> webview_env);
-  void CreateWebViewCompositionController(
-      HWND hwnd, CompositionControllerCreationCallback cb);
+  explicit WebviewHost(wil::com_ptr<ICoreWebView2Environment3> webview_env);
+  void CreateWebViewController(HWND hwnd, ControllerCreationCallback callback);
 };

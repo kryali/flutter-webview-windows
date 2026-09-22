@@ -84,15 +84,8 @@ navigations must use `setNavigationBlocklist`, because WebView2 does not allow
 its `NavigationStarting` event to be deferred while Dart returns a decision.
 
 ## Limitations
-This plugin provides seamless composition of web-based contents with other Flutter widgets by rendering off-screen.
+This plugin hosts WebView2 as a native windowed control (`ICoreWebView2Controller`) parented to the Flutter app's own top-level window, rather than compositing its content into the Flutter widget tree as a `Texture`.
 
-Unfortunately, [Microsoft Edge WebView2](https://docs.microsoft.com/en-us/microsoft-edge/webview2/) doesn't currently have an explicit API for offscreen rendering.
-In order to still be able to obtain a pixel buffer upon rendering a new frame, this plugin currently relies on the `Windows.Graphics.Capture` API provided by Windows 10.
-The downside is that older Windows versions aren't currently supported.
+The practical effect: a `Webview` widget reserves and reports a screen rectangle (its position and size within the Flutter window), and WebView2 renders directly into that rectangle as its own native window content -- not through Flutter's own paint pipeline. This means nothing Flutter draws can visually overlap the webview's rectangle (no clipping, no rounded corners, no animated transitions or overlays across that boundary -- the classic "airspace" limitation of embedding a native window inside a compositor-driven UI framework). Multiple webviews (e.g. browser tabs) can share the same parent window and coexist simultaneously; use `WebviewController.setVisible` to show/hide the ones not currently active, since an invisible Flutter widget doesn't hide the underlying native rendering automatically the way it would for a `Texture`.
 
-Older Windows versions might still be targeted by using `BitBlt` for the time being.
-
-See:
-- https://github.com/MicrosoftEdge/WebView2Feedback/issues/20
-- https://github.com/MicrosoftEdge/WebView2Feedback/issues/526
-- https://github.com/MicrosoftEdge/WebView2Feedback/issues/547
+This trades away the flexibility of the former offscreen/texture-based approach (which used the `Windows.Graphics.Capture` API to capture a composition surface into a shared GPU texture) for meaningfully lower overhead: no capture step, no extra GPU copy per frame, and no synthetic input forwarding -- WebView2 receives real Windows input messages directly.

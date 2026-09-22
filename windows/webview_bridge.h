@@ -3,46 +3,33 @@
 #include <flutter/event_channel.h>
 #include <flutter/method_channel.h>
 #include <flutter/standard_method_codec.h>
-#include <flutter/texture_registrar.h>
 
 #include <functional>
 #include <memory>
 
 #include "engine_availability.h"
-#include "graphics_context.h"
-#include "texture_bridge.h"
 #include "webview.h"
 
 class WebviewBridge {
  public:
   WebviewBridge(flutter::BinaryMessenger* messenger,
-                flutter::TextureRegistrar* texture_registrar,
-                GraphicsContext* graphics_context,
                 std::unique_ptr<Webview> webview);
   ~WebviewBridge();
 
-  // Stops event/capture activity and releases the Flutter texture only after
-  // the engine confirms it is no longer in use.
+  // Stops event handling and closes the webview.
   void Dispose(std::function<void()> completion);
 
-  TextureBridge* texture_bridge() const { return texture_bridge_.get(); }
-
-  int64_t texture_id() const { return texture_id_; }
+  int64_t webview_id() const { return webview_id_; }
 
  private:
-  // Declared in reverse teardown order: Flutter texture must stop referring to
-  // TextureBridge before TextureBridge and Webview are released.
   std::unique_ptr<Webview> webview_;
-  std::unique_ptr<TextureBridge> texture_bridge_;
-  std::unique_ptr<flutter::TextureVariant> flutter_texture_;
   std::unique_ptr<flutter::EventSink<flutter::EncodableValue>> event_sink_;
   std::unique_ptr<flutter::EventChannel<flutter::EncodableValue>>
       event_channel_;
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>>
       method_channel_;
 
-  flutter::TextureRegistrar* texture_registrar_;
-  int64_t texture_id_;
+  int64_t webview_id_;
 
   void HandleMethodCall(
       const flutter::MethodCall<flutter::EncodableValue>& method_call,

@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <format>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -15,9 +16,6 @@
 #include "webview_bridge.h"
 #include "webview_host.h"
 #include "webview_platform.h"
-
-#pragma comment(lib, "dxgi.lib")
-#pragma comment(lib, "d3d11.lib")
 
 namespace {
 
@@ -51,8 +49,7 @@ class WebviewWindowsPlugin : public flutter::Plugin {
  public:
   static void RegisterWithRegistrar(flutter::PluginRegistrarWindows* registrar);
 
-  WebviewWindowsPlugin(flutter::TextureRegistrar* textures,
-                       flutter::BinaryMessenger* messenger, HWND parent_window);
+  WebviewWindowsPlugin(flutter::BinaryMessenger* messenger, HWND parent_window);
 
   virtual ~WebviewWindowsPlugin();
 
@@ -62,7 +59,6 @@ class WebviewWindowsPlugin : public flutter::Plugin {
   std::unique_ptr<WebviewHost> webview_host_;
   std::unordered_map<int64_t, std::unique_ptr<WebviewBridge>> instances_;
 
-  flutter::TextureRegistrar* textures_;
   flutter::BinaryMessenger* messenger_;
   HWND parent_window_;
 
@@ -80,7 +76,7 @@ class WebviewWindowsPlugin : public flutter::Plugin {
 void WebviewWindowsPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows* registrar) {
   auto plugin = std::make_unique<WebviewWindowsPlugin>(
-      registrar->texture_registrar(), registrar->messenger(),
+      registrar->messenger(),
       registrar->GetView() ? registrar->GetView()->GetNativeWindow() : nullptr);
 
   plugin->channel_ =
@@ -96,9 +92,8 @@ void WebviewWindowsPlugin::RegisterWithRegistrar(
 }
 
 WebviewWindowsPlugin::WebviewWindowsPlugin(
-    flutter::TextureRegistrar* textures, flutter::BinaryMessenger* messenger,
-    HWND parent_window)
-    : textures_(textures), messenger_(messenger), parent_window_(parent_window) {
+    flutter::BinaryMessenger* messenger, HWND parent_window)
+    : messenger_(messenger), parent_window_(parent_window) {
   webview_windows::SetPluginAlive(true);
 }
 
@@ -146,8 +141,8 @@ void WebviewWindowsPlugin::HandleMethodCall(
     std::optional<std::string> additional_args =
         GetOptionalValue<std::string>(map, "additionalArguments");
 
-    webview_host_ = std::move(WebviewHost::Create(
-        platform_.get(), user_data_wpath, browser_exe_wpath, additional_args));
+    webview_host_ = std::move(
+        WebviewHost::Create(user_data_wpath, browser_exe_wpath, additional_args));
     if (!webview_host_) {
       return result->Error(kErrorCodeEnvironmentCreationFailed);
     }
@@ -172,8 +167,18 @@ void WebviewWindowsPlugin::HandleMethodCall(
   }
 
   if (method_call.method_name().compare(kMethodDispose) == 0) {
-    if (const auto texture_id = std::get_if<int64_t>(method_call.arguments())) {
-      const auto it = instances_.find(*texture_id);
+    // The standard codec encodes a small Dart int as int32 rather than
+    // int64 -- webview ids are small sequential counters, so both must be
+    // accepted or dispose fails with invalid_id for the first several tabs.
+    std::optional<int64_t> webview_id;
+    if (const auto id64 = std::get_if<int64_t>(method_call.arguments())) {
+      webview_id = *id64;
+    } else if (const auto id32 =
+                   std::get_if<int32_t>(method_call.arguments())) {
+      webview_id = *id32;
+    }
+    if (webview_id) {
+      const auto it = instances_.find(*webview_id);
       if (it != instances_.end()) {
         auto bridge =
             std::shared_ptr<WebviewBridge>(std::move(it->second));
@@ -205,8 +210,8 @@ void WebviewWindowsPlugin::CreateWebviewInstance(
   }
 
   if (!webview_host_) {
-    webview_host_ = std::move(WebviewHost::Create(
-        platform_.get(), platform_->GetDefaultDataDirectory()));
+    webview_host_ =
+        std::move(WebviewHost::Create(platform_->GetDefaultDataDirectory()));
     if (!webview_host_) {
       return result->Error(kErrorCodeEnvironmentCreationFailed);
     }
@@ -215,8 +220,11 @@ void WebviewWindowsPlugin::CreateWebviewInstance(
   std::shared_ptr<flutter::MethodResult<flutter::EncodableValue>>
       shared_result = std::move(result);
   // Flutter owns the parent HWND; disposing a WebView must not destroy it.
+  // Every webview instance (one per tab) shares this same parent HWND and is
+  // multiplexed via Webview::SetBounds/SetVisible rather than one native
+  // window per tab.
   webview_host_->CreateWebview(
-      parent_window_, true, false,
+      parent_window_, false,
       [shared_result, this](std::unique_ptr<Webview> webview,
                             std::unique_ptr<WebviewCreationError> error) {
         if (!webview) {
@@ -231,15 +239,14 @@ void WebviewWindowsPlugin::CreateWebviewInstance(
                                       "Creating the webview failed.");
         }
 
-        auto bridge = std::make_unique<WebviewBridge>(
-            messenger_, textures_, platform_->graphics_context(),
-            std::move(webview));
-        auto texture_id = bridge->texture_id();
-        instances_[texture_id] = std::move(bridge);
+        auto bridge =
+            std::make_unique<WebviewBridge>(messenger_, std::move(webview));
+        auto webview_id = bridge->webview_id();
+        instances_[webview_id] = std::move(bridge);
 
         auto response = flutter::EncodableValue(flutter::EncodableMap{
-            {flutter::EncodableValue("textureId"),
-             flutter::EncodableValue(texture_id)},
+            {flutter::EncodableValue("webviewId"),
+             flutter::EncodableValue(webview_id)},
         });
 
         shared_result->Success(response);

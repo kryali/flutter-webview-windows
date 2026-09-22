@@ -57,11 +57,6 @@ set(PLUGIN_SOURCES
   "webview.cc"
   "webview_host.cc"
   "webview_bridge.cc"
-  "texture_bridge.cc"
-  "texture_bridge_gpu.cc"
-  "graphics_context.cc"
-  "util/direct3d11.interop.cc"
-  "util/rohelper.cc"
   "util/string_converter.cc"
 )
 

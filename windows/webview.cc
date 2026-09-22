@@ -9,7 +9,6 @@
 #include <iostream>
 #include <regex>
 
-#include "util/composition.desktop.interop.h"
 #include "util/string_converter.h"
 #include "webview_host.h"
 
@@ -551,15 +550,10 @@ class PopupWindow {
 
 }  // namespace
 
-Webview::Webview(
-    wil::com_ptr<ICoreWebView2CompositionController> composition_controller,
-    WebviewHost* host, HWND hwnd, bool owns_window, bool offscreen_only)
-    : composition_controller_(std::move(composition_controller)),
-      host_(host),
-      hwnd_(hwnd),
-      owns_window_(owns_window) {
-  webview_controller_ =
-      composition_controller_.try_query<ICoreWebView2Controller3>();
+Webview::Webview(wil::com_ptr<ICoreWebView2Controller> controller,
+                 WebviewHost* host, HWND hwnd, bool owns_window)
+    : host_(host), hwnd_(hwnd), owns_window_(owns_window) {
+  webview_controller_ = controller.try_query<ICoreWebView2Controller3>();
 
   if (!webview_controller_ ||
       FAILED(webview_controller_->get_CoreWebView2(webview_.put()))) {
@@ -569,6 +563,10 @@ Webview::Webview(
   webview_controller_->put_BoundsMode(COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS);
   webview_controller_->put_ShouldDetectMonitorScaleChanges(FALSE);
   webview_controller_->put_RasterizationScale(1.0);
+  // Bounds/visibility start empty/hidden until the Dart-side widget reports
+  // real geometry via SetBounds and SetVisible(true) -- mirrors the old
+  // behavior where nothing was captured until the first SetSurfaceSize call.
+  webview_controller_->put_IsVisible(FALSE);
 
   wil::com_ptr<ICoreWebView2Settings> settings;
   if (SUCCEEDED(webview_->get_Settings(settings.put()))) {
@@ -581,7 +579,7 @@ Webview::Webview(
   EnableSecurityUpdates();
   RegisterEventHandlers();
 
-  is_valid_ = CreateSurface(host->compositor(), hwnd, offscreen_only);
+  is_valid_ = true;
 }
 
 Webview::~Webview() {
@@ -601,14 +599,6 @@ void Webview::Close() {
   UnregisterEventHandlers();
   ClearCallbacks();
 
-  // Tear down composition references before closing the controller, while its
-  // message-only owner window and WebView2 environment are still alive.
-  if (composition_controller_) {
-    composition_controller_->put_RootVisualTarget(nullptr);
-  }
-  surface_ = nullptr;
-  window_target_ = nullptr;
-
   if (webview_controller_) {
     webview_controller_->put_IsVisible(FALSE);
     webview_controller_->Close();
@@ -618,7 +608,6 @@ void Webview::Close() {
   settings2_ = nullptr;
   webview_ = nullptr;
   webview_controller_ = nullptr;
-  composition_controller_ = nullptr;
 
   if (owns_window_ && hwnd_) {
     DestroyWindow(hwnd_);
@@ -634,10 +623,6 @@ void Webview::UnregisterEventHandlers() {
         event_registrations_.got_focus_token_);
     webview_controller_->remove_LostFocus(
         event_registrations_.lost_focus_token_);
-  }
-  if (composition_controller_) {
-    composition_controller_->remove_CursorChanged(
-        event_registrations_.cursor_changed_token_);
   }
   if (webview_) {
     webview_->remove_ContentLoading(event_registrations_.content_loading_token_);
@@ -675,8 +660,6 @@ void Webview::ClearCallbacks() {
   on_load_error_callback_ = nullptr;
   history_changed_callback_ = nullptr;
   document_title_changed_callback_ = nullptr;
-  surface_size_changed_callback_ = nullptr;
-  cursor_changed_callback_ = nullptr;
   focus_changed_callback_ = nullptr;
   web_message_received_callback_ = nullptr;
   permission_requested_callback_ = nullptr;
@@ -687,56 +670,6 @@ void Webview::ClearCallbacks() {
   devtools_protocol_event_callback_ = nullptr;
   contains_fullscreen_element_changed_callback_ = nullptr;
   accelerator_key_pressed_callback_ = nullptr;
-}
-
-bool Webview::CreateSurface(
-    winrt::com_ptr<ABI::Windows::UI::Composition::ICompositor> compositor,
-    HWND hwnd, bool offscreen_only) {
-  winrt::com_ptr<ABI::Windows::UI::Composition::IContainerVisual> root;
-  if (FAILED(compositor->CreateContainerVisual(root.put()))) {
-    return false;
-  }
-
-  surface_ = root.try_as<ABI::Windows::UI::Composition::IVisual>();
-  if (!surface_) {
-    std::cerr << "Querying IVisual from container visual failed." << std::endl;
-    return false;
-  }
-
-  // initial size. doesn't matter as we resize the surface anyway.
-  surface_->put_Size({1280, 720});
-  surface_->put_IsVisible(true);
-
-  // Create on-screen window for debugging purposes
-  if (!offscreen_only) {
-    window_target_ = util::TryCreateDesktopWindowTarget(compositor, hwnd);
-    auto composition_target =
-        window_target_
-            .try_as<ABI::Windows::UI::Composition::ICompositionTarget>();
-    if (composition_target) {
-      composition_target->put_Root(surface_.get());
-    }
-  }
-
-  winrt::com_ptr<ABI::Windows::UI::Composition::IVisual> webview_visual;
-  compositor->CreateContainerVisual(
-      reinterpret_cast<ABI::Windows::UI::Composition::IContainerVisual**>(
-          webview_visual.put()));
-
-  auto webview_visual2 =
-      webview_visual.try_as<ABI::Windows::UI::Composition::IVisual2>();
-  if (webview_visual2) {
-    webview_visual2->put_RelativeSizeAdjustment({1.0f, 1.0f});
-  }
-
-  winrt::com_ptr<ABI::Windows::UI::Composition::IVisualCollection> children;
-  root->get_Children(children.put());
-  children->InsertAtTop(webview_visual.get());
-  composition_controller_->put_RootVisualTarget(webview_visual2.get());
-
-  webview_controller_->put_IsVisible(true);
-
-  return true;
 }
 
 void Webview::EnableSecurityUpdates() {
@@ -891,20 +824,6 @@ void Webview::RegisterEventHandlers() {
           })
           .Get(),
       &event_registrations_.document_title_changed_token_);
-
-  composition_controller_->add_CursorChanged(
-      Callback<ICoreWebView2CursorChangedEventHandler>(
-          [this](ICoreWebView2CompositionController* sender,
-                 IUnknown* args) -> HRESULT {
-            HCURSOR cursor;
-            if (cursor_changed_callback_ &&
-                sender->get_Cursor(&cursor) == S_OK) {
-              cursor_changed_callback_(cursor);
-            }
-            return S_OK;
-          })
-          .Get(),
-      &event_registrations_.cursor_changed_token_);
 
   webview_controller_->add_GotFocus(
       Callback<ICoreWebView2FocusChangedEventHandler>(
@@ -1179,33 +1098,57 @@ void Webview::RegisterEventHandlers() {
   }
 }
 
-void Webview::SetSurfaceSize(size_t width, size_t height, float scale_factor) {
+void Webview::SetBounds(long x, long y, size_t width, size_t height,
+                        float scale_factor) {
   if (!IsValid()) {
     return;
   }
 
-  if (surface_ && width > 0 && height > 0) {
+  if (width > 0 && height > 0) {
     scale_factor_ = scale_factor;
-    auto scaled_width = width * scale_factor;
-    auto scaled_height = height * scale_factor;
+    auto scaled_x = static_cast<LONG>(x * scale_factor);
+    auto scaled_y = static_cast<LONG>(y * scale_factor);
+    auto scaled_width = static_cast<LONG>(width * scale_factor);
+    auto scaled_height = static_cast<LONG>(height * scale_factor);
 
-    // Bounds must describe the visible texture, not an off-screen sentinel:
-    // WebView2 uses these coordinates to place native select popups.
-    RECT bounds{};
-    webview_controller_->get_Bounds(&bounds);
-    bounds.right = bounds.left + static_cast<LONG>(scaled_width);
-    bounds.bottom = bounds.top + static_cast<LONG>(scaled_height);
+    // x/y arrive as logical pixels (Flutter's coordinate space) and must be
+    // scaled to physical pixels just like width/height, since put_Bounds is
+    // relative to hwnd_'s client area in physical pixels -- WebView2 uses
+    // these coordinates to place native select popups. Leaving x/y unscaled
+    // under non-100% DPI positions the webview too high/left of where its
+    // Flutter widget actually is (e.g. bleeding into a custom title bar).
+    RECT bounds{scaled_x, scaled_y, scaled_x + scaled_width,
+                scaled_y + scaled_height};
 
-    surface_->put_Size({scaled_width, scaled_height});
     webview_controller_->put_RasterizationScale(scale_factor);
     if (webview_controller_->put_Bounds(bounds) != S_OK) {
       std::cerr << "Setting webview bounds failed." << std::endl;
     }
-
-    if (surface_size_changed_callback_) {
-      surface_size_changed_callback_(width, height);
-    }
   }
+}
+
+void Webview::SetVisible(bool visible) {
+  if (!IsValid()) {
+    return;
+  }
+  webview_controller_->put_IsVisible(visible);
+}
+
+bool Webview::SetParentWindow(HWND new_parent) {
+  if (!IsValid() || !new_parent) {
+    return false;
+  }
+  HWND current = nullptr;
+  webview_controller_->get_ParentWindow(&current);
+  if (current == new_parent) {
+    return true;
+  }
+  if (FAILED(webview_controller_->put_ParentWindow(new_parent))) {
+    return false;
+  }
+  hwnd_ = new_parent;
+  webview_controller_->NotifyParentWindowPositionChanged();
+  return true;
 }
 
 bool Webview::OpenDevTools() {
@@ -1381,41 +1324,6 @@ void Webview::SetInterceptedAcceleratorKeys(
 // Texture input arrives through Flutter, so activate its actual host window
 // and focus WebView2 synchronously before dispatching the press. Doing this
 // from a Dart ancestor listener can change focus after the popup has opened.
-void Webview::FocusBeforePointerDown() {
-  POINT point{};
-  if (!GetCursorPos(&point)) return;
-  HWND window = GetAncestor(WindowFromPoint(point), GA_ROOT);
-  DWORD process_id = 0;
-  if (!window || !GetWindowThreadProcessId(window, &process_id) ||
-      process_id != GetCurrentProcessId()) {
-    return;
-  }
-  // Derive the texture origin from the physical cursor and WebView-local
-  // position. This also handles textures transferred to another Flutter HWND.
-  POINT origin = point;
-  if (!ScreenToClient(window, &origin)) return;
-  origin.x -= last_cursor_pos_.x;
-  origin.y -= last_cursor_pos_.y;
-  HWND parent = nullptr;
-  webview_controller_->get_ParentWindow(&parent);
-  if (parent != window && FAILED(webview_controller_->put_ParentWindow(window))) {
-    return;
-  }
-  RECT bounds{};
-  if (SUCCEEDED(webview_controller_->get_Bounds(&bounds))) {
-    const LONG width = bounds.right - bounds.left;
-    const LONG height = bounds.bottom - bounds.top;
-    bounds = {origin.x, origin.y, origin.x + width, origin.y + height};
-    webview_controller_->put_Bounds(bounds);
-  }
-  webview_controller_->NotifyParentWindowPositionChanged();
-  if (GetForegroundWindow() != window) {
-    SetForegroundWindow(window);
-    SetActiveWindow(window);
-  }
-  RequestFocus();
-}
-
 bool Webview::RequestFocus() {
   return IsValid() &&
          SUCCEEDED(webview_controller_->MoveFocus(
@@ -1454,160 +1362,16 @@ bool Webview::SetZoomFactor(double factor) {
   return webview_controller_->put_ZoomFactor(factor) == S_OK;
 }
 
-void Webview::SetCursorPos(double x, double y) {
+bool Webview::SetShowFpsOverlay(bool show) {
   if (!IsValid()) {
-    return;
+    return false;
   }
-
-  POINT point;
-  point.x = static_cast<LONG>(x * scale_factor_);
-  point.y = static_cast<LONG>(y * scale_factor_);
-  last_cursor_pos_ = point;
-
-  // https://docs.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2?view=webview2-1.0.774.44
-  composition_controller_->SendMouseInput(
-      COREWEBVIEW2_MOUSE_EVENT_KIND::COREWEBVIEW2_MOUSE_EVENT_KIND_MOVE,
-      virtual_keys_.state(), 0, point);
-}
-
-void Webview::SetPointerUpdate(int32_t pointer,
-                               WebviewPointerEventKind eventKind, double x,
-                               double y, double size, double pressure) {
-  if (!IsValid()) {
-    return;
-  }
-
-  COREWEBVIEW2_POINTER_EVENT_KIND event =
-      COREWEBVIEW2_POINTER_EVENT_KIND_UPDATE;
-  UINT32 pointerFlags = POINTER_FLAG_NONE;
-  switch (eventKind) {
-    case WebviewPointerEventKind::Activate:
-      event = COREWEBVIEW2_POINTER_EVENT_KIND_ACTIVATE;
-      break;
-    case WebviewPointerEventKind::Down:
-      FocusBeforePointerDown();
-      event = COREWEBVIEW2_POINTER_EVENT_KIND_DOWN;
-      pointerFlags =
-          POINTER_FLAG_DOWN | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
-      break;
-    case WebviewPointerEventKind::Enter:
-      event = COREWEBVIEW2_POINTER_EVENT_KIND_ENTER;
-      break;
-    case WebviewPointerEventKind::Leave:
-      event = COREWEBVIEW2_POINTER_EVENT_KIND_LEAVE;
-      break;
-    case WebviewPointerEventKind::Up:
-      event = COREWEBVIEW2_POINTER_EVENT_KIND_UP;
-      pointerFlags = POINTER_FLAG_UP;
-      break;
-    case WebviewPointerEventKind::Update:
-      event = COREWEBVIEW2_POINTER_EVENT_KIND_UPDATE;
-      pointerFlags =
-          POINTER_FLAG_UPDATE | POINTER_FLAG_INRANGE | POINTER_FLAG_INCONTACT;
-      break;
-  }
-
-  POINT point;
-  point.x = static_cast<LONG>(x * scale_factor_);
-  point.y = static_cast<LONG>(y * scale_factor_);
-
-  RECT rect;
-  rect.left = point.x - 2;
-  rect.right = point.x + 2;
-  rect.top = point.y - 2;
-  rect.bottom = point.y + 2;
-
-  host_->CreateWebViewPointerInfo(
-      [this, pointer, event, pointerFlags, point, rect, pressure](
-          wil::com_ptr<ICoreWebView2PointerInfo> pointerInfo,
-          std::unique_ptr<WebviewCreationError> error) {
-        if (pointerInfo) {
-          ICoreWebView2PointerInfo* pInfo = pointerInfo.get();
-          pInfo->put_PointerId(pointer);
-          pInfo->put_PointerKind(PT_TOUCH);
-          pInfo->put_PointerFlags(pointerFlags);
-          pInfo->put_TouchFlags(TOUCH_FLAG_NONE);
-          pInfo->put_TouchMask(TOUCH_MASK_CONTACTAREA | TOUCH_MASK_PRESSURE);
-          pInfo->put_TouchPressure(
-              std::clamp((UINT32)(pressure == 0.0 ? 1024 : 1024 * pressure),
-                         (UINT32)0, (UINT32)1024));
-          pInfo->put_PixelLocationRaw(point);
-          pInfo->put_TouchContactRaw(rect);
-          composition_controller_->SendPointerInput(event, pInfo);
-        }
-      });
-}
-
-void Webview::SetPointerButtonState(WebviewPointerButton button, bool is_down) {
-  if (!IsValid()) {
-    return;
-  }
-
-  if (is_down) FocusBeforePointerDown();
-
-  COREWEBVIEW2_MOUSE_EVENT_KIND kind;
-  switch (button) {
-    case WebviewPointerButton::Primary:
-      virtual_keys_.set_isLeftButtonDown(is_down);
-      kind = is_down ? COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_DOWN
-                     : COREWEBVIEW2_MOUSE_EVENT_KIND_LEFT_BUTTON_UP;
-      break;
-    case WebviewPointerButton::Secondary:
-      virtual_keys_.set_isRightButtonDown(is_down);
-      kind = is_down ? COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_DOWN
-                     : COREWEBVIEW2_MOUSE_EVENT_KIND_RIGHT_BUTTON_UP;
-      break;
-    case WebviewPointerButton::Tertiary:
-      virtual_keys_.set_isMiddleButtonDown(is_down);
-      kind = is_down ? COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_DOWN
-                     : COREWEBVIEW2_MOUSE_EVENT_KIND_MIDDLE_BUTTON_UP;
-      break;
-    default:
-      kind = static_cast<COREWEBVIEW2_MOUSE_EVENT_KIND>(0);
-  }
-
-  composition_controller_->SendMouseInput(kind, virtual_keys_.state(), 0,
-                                          last_cursor_pos_);
-}
-
-void Webview::SendScroll(double delta, bool horizontal) {
-  // clang-format off
-  //
-  // TODO:
-  // Using a fixed value here is certainly wrong. Flutter's calculation in flutter_window.cc
-  // needs to be inverted to get back the "native" value. See
-  // - https://github.com/flutter/engine/blob/82c1dfcf588c2669ca391134910d634ca31fddf1/shell/platform/windows/flutter_window.cc#L416-L426
-  // Related:
-  // - https://source.chromium.org/chromium/chromium/src/+/main:ui/events/blink/web_input_event_builders_win.cc
-  // - https://github.com/flutter/flutter/issues/107248
-  //
-  // clang-format on
-  constexpr auto kScrollMultiplier = 1.5;
-
-  auto offset = static_cast<short>(delta * kScrollMultiplier);
-
-  if (horizontal) {
-    composition_controller_->SendMouseInput(
-        COREWEBVIEW2_MOUSE_EVENT_KIND_HORIZONTAL_WHEEL, virtual_keys_.state(),
-        offset, last_cursor_pos_);
-  } else {
-    composition_controller_->SendMouseInput(COREWEBVIEW2_MOUSE_EVENT_KIND_WHEEL,
-                                            virtual_keys_.state(), offset,
-                                            last_cursor_pos_);
-  }
-}
-
-void Webview::SetScrollDelta(double delta_x, double delta_y) {
-  if (!IsValid()) {
-    return;
-  }
-
-  if (delta_x != 0.0) {
-    SendScroll(delta_x, true);
-  }
-  if (delta_y != 0.0) {
-    SendScroll(delta_y, false);
-  }
+  // Enable is idempotent, so no need to track whether it's already been
+  // called.
+  webview_->CallDevToolsProtocolMethod(L"Overlay.enable", L"{}", nullptr);
+  return SUCCEEDED(webview_->CallDevToolsProtocolMethod(
+      L"Overlay.setShowFPSCounter", show ? L"{\"show\":true}" : L"{\"show\":false}",
+      nullptr));
 }
 
 void Webview::LoadUrl(const std::string& url) {

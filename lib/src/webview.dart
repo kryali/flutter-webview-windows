@@ -2,12 +2,10 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:ui';
 
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
-import 'cursor.dart';
 import 'enums.dart';
 
 class HistoryChanged {
@@ -40,20 +38,6 @@ class NavigationBlockedEvent {
     this.isUserInitiated,
     this.isRedirected,
   );
-}
-
-/// Cumulative frame counters reported by the native texture bridge.
-///
-/// Sample these periodically and divide the deltas by the elapsed time to get
-/// a frame rate.
-class WebviewFrameCounts {
-  const WebviewFrameCounts(this.captured, this.rendered);
-
-  /// Frames WebView2 produced, as delivered by Windows Graphics Capture.
-  final int captured;
-
-  /// Frames copied into the Flutter texture, after any FPS limit is applied.
-  final int rendered;
 }
 
 /// A virtual-key and exact modifier combination to intercept in WebView2.
@@ -146,21 +130,6 @@ typedef NewWindowRequestedDelegate = FutureOr<WebviewNavigationDecision>
 
 typedef ScriptID = String;
 
-/// Attempts to translate a button constant such as [kPrimaryMouseButton]
-/// to a [PointerButton]
-PointerButton getButton(int value) {
-  switch (value) {
-    case kPrimaryMouseButton:
-      return PointerButton.primary;
-    case kSecondaryMouseButton:
-      return PointerButton.secondary;
-    case kTertiaryButton:
-      return PointerButton.tertiary;
-    default:
-      return PointerButton.none;
-  }
-}
-
 const String _pluginChannelPrefix = 'io.jns.webview.win';
 const MethodChannel _pluginChannel = MethodChannel(_pluginChannelPrefix);
 
@@ -232,7 +201,7 @@ class WebviewController extends ValueNotifier<WebviewValue> {
   }
 
   late Completer<void> _creatingCompleter;
-  int _textureId = 0;
+  int _webviewId = 0;
   bool _isDisposed = false;
 
   Future<void> get ready => _creatingCompleter.future;
@@ -297,12 +266,6 @@ class WebviewController extends ValueNotifier<WebviewValue> {
   /// A stream reflecting the current document title.
   Stream<String> get title => _titleStreamController.stream;
 
-  final StreamController<SystemMouseCursor> _cursorStreamController =
-      StreamController<SystemMouseCursor>.broadcast();
-
-  /// A stream reflecting the current cursor style.
-  Stream<SystemMouseCursor> get _cursor => _cursorStreamController.stream;
-
   final StreamController<WebviewAcceleratorKeyEvent>
       _acceleratorKeyPressedStreamController =
       StreamController<WebviewAcceleratorKeyEvent>.broadcast();
@@ -336,9 +299,9 @@ class WebviewController extends ValueNotifier<WebviewValue> {
       final reply =
           await _pluginChannel.invokeMapMethod<String, dynamic>('initialize');
 
-      _textureId = reply!['textureId'];
-      _methodChannel = MethodChannel('$_pluginChannelPrefix/$_textureId');
-      _eventChannel = EventChannel('$_pluginChannelPrefix/$_textureId/events');
+      _webviewId = reply!['webviewId'];
+      _methodChannel = MethodChannel('$_pluginChannelPrefix/$_webviewId');
+      _eventChannel = EventChannel('$_pluginChannelPrefix/$_webviewId/events');
       _eventStreamSubscription =
           _eventChannel.receiveBroadcastStream().listen((event) {
         final map = event as Map<dynamic, dynamic>;
@@ -374,9 +337,6 @@ class WebviewController extends ValueNotifier<WebviewValue> {
             break;
           case 'titleChanged':
             _titleStreamController.add(map['value']);
-            break;
-          case 'cursorChanged':
-            _cursorStreamController.add(getCursorByName(map['value']));
             break;
           case 'webMessageReceived':
             try {
@@ -558,7 +518,7 @@ class WebviewController extends ValueNotifier<WebviewValue> {
     if (!_isDisposed) {
       _isDisposed = true;
       await _eventStreamSubscription?.cancel();
-      await _pluginChannel.invokeMethod('dispose', _textureId);
+      await _pluginChannel.invokeMethod('dispose', _webviewId);
       _closeStreams();
     }
     super.dispose();
@@ -576,7 +536,6 @@ class WebviewController extends ValueNotifier<WebviewValue> {
     _historyChangedStreamController.close();
     _securityStateChangedStreamController.close();
     _titleStreamController.close();
-    _cursorStreamController.close();
     _acceleratorKeyPressedStreamController.close();
     _webMessageStreamController.close();
     _containsFullScreenElementChangedStreamController.close();
@@ -934,79 +893,79 @@ class WebviewController extends ValueNotifier<WebviewValue> {
     return _methodChannel.invokeMethod('clearVirtualHostNameMapping', hostName);
   }
 
-  /// Limits the number of frames per second to the given value.
-  Future<void> setFpsLimit([int? maxFps = 0]) async {
+  /// Toggles native rendering for this webview without closing it.
+  ///
+  /// Unlike the former texture-backed rendering, an unpainted native webview
+  /// isn't hidden automatically just because its Flutter widget isn't
+  /// currently shown (e.g. behind an [IndexedStack] for tab switching) --
+  /// call this explicitly to keep only the active tab's webview visible
+  /// while others stay alive in the background.
+  Future<void> setVisible(bool visible) async {
     if (_isDisposed) {
       return;
     }
     assert(value.isInitialized);
-    return _methodChannel.invokeMethod('setFpsLimit', maxFps);
+    return _methodChannel.invokeMethod('setVisible', visible);
   }
 
-  /// Returns the cumulative number of frames captured from WebView2 and
-  /// rendered into the Flutter texture. Intended for debugging, e.g. via
-  /// [Webview.showFpsOverlay].
-  Future<WebviewFrameCounts?> getFrameCounts() async {
+  /// Moves this webview to a different native top-level window, identified
+  /// by [windowHandle] -- the raw HWND value (e.g. as obtained from
+  /// Flutter's `RegularWindowController.getWindowHandle().address`, or
+  /// platform channel code that reinterpret-casts a native HWND through
+  /// `intptr_t` to an int) of the window this webview should now render
+  /// into. After calling this, report fresh bounds relative to the new
+  /// window's client area (e.g. by re-laying-out the [Webview] widget in
+  /// its new location) before the webview is shown there.
+  ///
+  /// Needed because this plugin hosts WebView2 as a native windowed control
+  /// parented to one specific top-level window; unlike the former
+  /// texture-backed rendering, moving the Dart-side widget to a different
+  /// window's view does not move the underlying native content on its own
+  /// -- e.g. when an app with its own multi-window support (such as
+  /// Flutter's experimental multi-view desktop windowing) lets a user drag
+  /// a tab from one native window to another.
+  ///
+  /// Returns whether the reparent succeeded.
+  Future<bool> setParentWindow(int windowHandle) async {
     if (_isDisposed) {
-      return null;
+      return false;
     }
     assert(value.isInitialized);
-    final map =
-        await _methodChannel.invokeMapMethod<String, dynamic>('getFrameCounts');
-    if (map == null) {
-      return null;
-    }
-    return WebviewFrameCounts(map['captured'] as int, map['rendered'] as int);
+    final succeeded = await _methodChannel.invokeMethod<bool>(
+        'setParentWindow', windowHandle);
+    return succeeded ?? false;
   }
 
-  /// Sends a Pointer (Touch) update
-  Future<void> _setPointerUpdate(WebviewPointerEventKind kind, int pointer,
-      Offset position, double size, double pressure) async {
-    if (_isDisposed) {
-      return;
-    }
-    assert(value.isInitialized);
-    return _methodChannel.invokeMethod('setPointerUpdate',
-        [pointer, kind.index, position.dx, position.dy, size, pressure]);
-  }
-
-  /// Moves the virtual cursor to [position].
-  Future<void> _setCursorPos(Offset position) async {
-    if (_isDisposed) {
-      return;
-    }
-    assert(value.isInitialized);
-    return _methodChannel
-        .invokeMethod('setCursorPos', [position.dx, position.dy]);
-  }
-
-  /// Indicates whether the specified [button] is currently down.
-  Future<void> _setPointerButtonState(PointerButton button, bool isDown) async {
+  /// Toggles Chromium's own built-in FPS counter overlay -- the same one
+  /// shown by DevTools' Rendering pane -- via the DevTools Protocol.
+  ///
+  /// Windowed hosting gives this plugin no visibility into WebView2's own
+  /// frame production (unlike the former offscreen capture pipeline, which
+  /// could count captured/rendered frames itself), so this asks Chromium to
+  /// show its own real frame rate directly on the page instead. Intended for
+  /// debugging, e.g. via [Webview.showFpsOverlay].
+  Future<void> setShowFpsOverlay(bool show) async {
     if (_isDisposed) {
       return;
     }
     assert(value.isInitialized);
-    return _methodChannel.invokeMethod('setPointerButton',
-        <String, dynamic>{'button': button.index, 'isDown': isDown});
+    return _methodChannel.invokeMethod('setShowFpsOverlay', show);
   }
 
-  /// Sets the horizontal and vertical scroll delta.
-  Future<void> _setScrollDelta(double dx, double dy) async {
+  /// Sets the bounds of this webview, relative to the top-left of the
+  /// hosting Flutter window's client area.
+  Future<void> _setBounds(Offset position, Size size, double scaleFactor) async {
     if (_isDisposed) {
       return;
     }
     assert(value.isInitialized);
-    return _methodChannel.invokeMethod('setScrollDelta', [dx, dy]);
-  }
-
-  /// Sets the surface size to the provided [size].
-  Future<void> _setSize(Size size, double scaleFactor) async {
-    if (_isDisposed) {
-      return;
-    }
-    assert(value.isInitialized);
-    return _methodChannel
-        .invokeMethod('setSize', [size.width, size.height, scaleFactor]);
+    return _methodChannel.invokeMethod('setSize', [
+      position.dx,
+      position.dy,
+      size.width,
+      size.height,
+      scaleFactor,
+    ]);
   }
 }
 
@@ -1023,17 +982,9 @@ class Webview extends StatefulWidget {
   /// was available.
   final double? scaleFactor;
 
-  /// The [FilterQuality] used for scaling the texture's contents.
-  /// Defaults to [FilterQuality.none] as this renders in native resolution
-  /// unless specifying a [scaleFactor].
-  final FilterQuality filterQuality;
-
-  /// Whether to draw a small overlay in the top-right corner showing the
-  /// frame rate the webview is rendering at. Intended for debugging, e.g.
-  /// `showFpsOverlay: kDebugMode`.
-  ///
-  /// Frames are only captured when WebView2 repaints, so a static page
-  /// reports 0 FPS.
+  /// Whether to show Chromium's own built-in FPS counter overlay on the
+  /// page, for eyeballing rendering smoothness. Intended for debugging, e.g.
+  /// `showFpsOverlay: kDebugMode`. See [WebviewController.setShowFpsOverlay].
   final bool showFpsOverlay;
 
   const Webview(this.controller,
@@ -1041,7 +992,6 @@ class Webview extends StatefulWidget {
       this.height,
       this.permissionRequested,
       this.scaleFactor,
-      this.filterQuality = FilterQuality.none,
       this.showFpsOverlay = false});
 
   @override
@@ -1050,15 +1000,17 @@ class Webview extends StatefulWidget {
 
 class _WebviewState extends State<Webview> {
   final GlobalKey _key = GlobalKey();
-  final _downButtons = <int, PointerButton>{};
-
-  PointerDeviceKind _pointerKind = PointerDeviceKind.unknown;
-
-  MouseCursor _cursor = SystemMouseCursors.basic;
 
   WebviewController get _controller => widget.controller;
 
-  StreamSubscription? _cursorSubscription;
+  // Guards a one-time automatic setVisible(true) the first time real bounds
+  // are reported, so a plain (non-tabbed) Webview just works once mounted.
+  // An app switching between multiple webviews (e.g. tabs kept alive behind
+  // an IndexedStack) should call controller.setVisible(false) itself for
+  // whichever ones aren't currently shown -- unlike the former
+  // texture-backed rendering, a native webview isn't hidden automatically
+  // just because its Flutter widget isn't currently painted.
+  bool _madeVisible = false;
 
   @override
   void initState() {
@@ -1068,14 +1020,8 @@ class _WebviewState extends State<Webview> {
     // remove this line
     _controller._permissionRequested = widget.permissionRequested;
 
-    // Report initial surface size
-    WidgetsBinding.instance.addPostFrameCallback((_) => _reportSurfaceSize());
-
-    _cursorSubscription = _controller._cursor.listen((cursor) {
-      setState(() {
-        _cursor = cursor;
-      });
-    });
+    // Report initial bounds once laid out.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _reportBounds());
   }
 
   @override
@@ -1090,207 +1036,31 @@ class _WebviewState extends State<Webview> {
   }
 
   Widget _buildInner() {
+    // WebView2 renders as a native window, not through Flutter's own paint
+    // pipeline -- this widget exists purely to reserve, and report, the
+    // screen rectangle it should occupy (see _reportBounds).
     return NotificationListener<SizeChangedLayoutNotification>(
         onNotification: (notification) {
-          _reportSurfaceSize();
+          _reportBounds();
           return true;
         },
-        child: SizeChangedLayoutNotifier(
-            child: _controller.value.isInitialized
-                ? Listener(
-                    onPointerHover: (ev) {
-                      // ev.kind is for whatever reason not set to touch
-                      // even on touch input
-                      if (_pointerKind == PointerDeviceKind.touch) {
-                        // Ignoring hover events on touch for now
-                        return;
-                      }
-                      _controller._setCursorPos(ev.localPosition);
-                    },
-                    onPointerDown: (ev) {
-                      _pointerKind = ev.kind;
-                      // Update position before either mouse or touch down.
-                      _controller._setCursorPos(ev.localPosition);
-                      if (ev.kind == PointerDeviceKind.touch) {
-                        _controller._setPointerUpdate(
-                            WebviewPointerEventKind.down,
-                            ev.pointer,
-                            ev.localPosition,
-                            ev.size,
-                            ev.pressure);
-                        return;
-                      }
-                      final button = getButton(ev.buttons);
-                      _downButtons[ev.pointer] = button;
-                      _controller._setPointerButtonState(button, true);
-                    },
-                    onPointerUp: (ev) {
-                      _pointerKind = ev.kind;
-                      if (ev.kind == PointerDeviceKind.touch) {
-                        _controller._setPointerUpdate(
-                            WebviewPointerEventKind.up,
-                            ev.pointer,
-                            ev.localPosition,
-                            ev.size,
-                            ev.pressure);
-                        return;
-                      }
-                      final button = _downButtons.remove(ev.pointer);
-                      if (button != null) {
-                        _controller._setPointerButtonState(button, false);
-                      }
-                    },
-                    onPointerCancel: (ev) {
-                      _pointerKind = ev.kind;
-                      final button = _downButtons.remove(ev.pointer);
-                      if (button != null) {
-                        _controller._setPointerButtonState(button, false);
-                      }
-                    },
-                    onPointerMove: (ev) {
-                      _pointerKind = ev.kind;
-                      if (ev.kind == PointerDeviceKind.touch) {
-                        _controller._setPointerUpdate(
-                            WebviewPointerEventKind.update,
-                            ev.pointer,
-                            ev.localPosition,
-                            ev.size,
-                            ev.pressure);
-                      } else {
-                        _controller._setCursorPos(ev.localPosition);
-                      }
-                    },
-                    onPointerSignal: (signal) {
-                      if (signal is PointerScrollEvent) {
-                        _controller._setScrollDelta(
-                            -signal.scrollDelta.dx, -signal.scrollDelta.dy);
-                      }
-                    },
-                    onPointerPanZoomUpdate: (signal) {
-                      if (signal.panDelta.dx.abs() > signal.panDelta.dy.abs()) {
-                        _controller._setScrollDelta(-signal.panDelta.dx, 0);
-                      } else {
-                        _controller._setScrollDelta(0, signal.panDelta.dy);
-                      }
-                    },
-                    child: MouseRegion(
-                        cursor: _cursor,
-                        child: widget.showFpsOverlay
-                            ? Stack(fit: StackFit.expand, children: [
-                                _buildTexture(),
-                                Positioned(
-                                    top: 4,
-                                    right: 4,
-                                    child: _WebviewFpsOverlay(_controller)),
-                              ])
-                            : _buildTexture()),
-                  )
-                : const SizedBox()));
+        child: SizeChangedLayoutNotifier(child: SizedBox.expand()));
   }
 
-  Widget _buildTexture() {
-    return Texture(
-      textureId: _controller._textureId,
-      filterQuality: widget.filterQuality,
-    );
-  }
-
-  void _reportSurfaceSize() async {
+  void _reportBounds() async {
     final box = _key.currentContext?.findRenderObject() as RenderBox?;
     if (box != null) {
       await _controller.ready;
-      unawaited(_controller._setSize(
-          box.size, widget.scaleFactor ?? window.devicePixelRatio));
+      final position = box.localToGlobal(Offset.zero);
+      unawaited(_controller._setBounds(
+          position, box.size, widget.scaleFactor ?? window.devicePixelRatio));
+      if (!_madeVisible) {
+        _madeVisible = true;
+        unawaited(_controller.setVisible(true));
+        if (widget.showFpsOverlay) {
+          unawaited(_controller.setShowFpsOverlay(true));
+        }
+      }
     }
-  }
-
-  @override
-  void dispose() {
-    super.dispose();
-    _cursorSubscription?.cancel();
-  }
-}
-
-/// Periodically samples [WebviewController.getFrameCounts] and displays the
-/// resulting frame rates.
-class _WebviewFpsOverlay extends StatefulWidget {
-  final WebviewController controller;
-
-  const _WebviewFpsOverlay(this.controller);
-
-  @override
-  _WebviewFpsOverlayState createState() => _WebviewFpsOverlayState();
-}
-
-class _WebviewFpsOverlayState extends State<_WebviewFpsOverlay> {
-  static const _sampleInterval = Duration(milliseconds: 500);
-
-  Timer? _timer;
-  final Stopwatch _stopwatch = Stopwatch();
-  WebviewFrameCounts? _lastCounts;
-  double? _renderedFps;
-  double? _capturedFps;
-
-  @override
-  void initState() {
-    super.initState();
-    _timer = Timer.periodic(_sampleInterval, (_) => _sample());
-    _sample();
-  }
-
-  Future<void> _sample() async {
-    final WebviewFrameCounts? counts;
-    try {
-      counts = await widget.controller.getFrameCounts();
-    } on PlatformException {
-      return;
-    }
-    if (!mounted || counts == null) {
-      return;
-    }
-    final newCounts = counts;
-    final elapsed = _stopwatch.elapsedMicroseconds / 1e6;
-    _stopwatch
-      ..reset()
-      ..start();
-    final last = _lastCounts;
-    _lastCounts = newCounts;
-    if (last == null || elapsed <= 0) {
-      return;
-    }
-    setState(() {
-      _renderedFps = (newCounts.rendered - last.rendered) / elapsed;
-      _capturedFps = (newCounts.captured - last.captured) / elapsed;
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final rendered = _renderedFps?.toStringAsFixed(0) ?? '--';
-    final captured = _capturedFps?.toStringAsFixed(0) ?? '--';
-    return IgnorePointer(
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-        decoration: BoxDecoration(
-          color: const Color(0xB0000000),
-          borderRadius: BorderRadius.circular(4),
-        ),
-        child: Text(
-          '$rendered FPS (captured $captured)',
-          textDirection: TextDirection.ltr,
-          style: const TextStyle(
-            color: Color(0xFF00FF00),
-            fontSize: 12,
-            fontFamily: 'monospace',
-          ),
-        ),
-      ),
-    );
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
   }
 }
