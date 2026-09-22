@@ -42,6 +42,20 @@ class NavigationBlockedEvent {
   );
 }
 
+/// Cumulative frame counters reported by the native texture bridge.
+///
+/// Sample these periodically and divide the deltas by the elapsed time to get
+/// a frame rate.
+class WebviewFrameCounts {
+  const WebviewFrameCounts(this.captured, this.rendered);
+
+  /// Frames WebView2 produced, as delivered by Windows Graphics Capture.
+  final int captured;
+
+  /// Frames copied into the Flutter texture, after any FPS limit is applied.
+  final int rendered;
+}
+
 /// A virtual-key and exact modifier combination to intercept in WebView2.
 class WebviewAcceleratorKey {
   const WebviewAcceleratorKey({
@@ -929,6 +943,22 @@ class WebviewController extends ValueNotifier<WebviewValue> {
     return _methodChannel.invokeMethod('setFpsLimit', maxFps);
   }
 
+  /// Returns the cumulative number of frames captured from WebView2 and
+  /// rendered into the Flutter texture. Intended for debugging, e.g. via
+  /// [Webview.showFpsOverlay].
+  Future<WebviewFrameCounts?> getFrameCounts() async {
+    if (_isDisposed) {
+      return null;
+    }
+    assert(value.isInitialized);
+    final map =
+        await _methodChannel.invokeMapMethod<String, dynamic>('getFrameCounts');
+    if (map == null) {
+      return null;
+    }
+    return WebviewFrameCounts(map['captured'] as int, map['rendered'] as int);
+  }
+
   /// Sends a Pointer (Touch) update
   Future<void> _setPointerUpdate(WebviewPointerEventKind kind, int pointer,
       Offset position, double size, double pressure) async {
@@ -998,12 +1028,21 @@ class Webview extends StatefulWidget {
   /// unless specifying a [scaleFactor].
   final FilterQuality filterQuality;
 
+  /// Whether to draw a small overlay in the top-right corner showing the
+  /// frame rate the webview is rendering at. Intended for debugging, e.g.
+  /// `showFpsOverlay: kDebugMode`.
+  ///
+  /// Frames are only captured when WebView2 repaints, so a static page
+  /// reports 0 FPS.
+  final bool showFpsOverlay;
+
   const Webview(this.controller,
       {this.width,
       this.height,
       this.permissionRequested,
       this.scaleFactor,
-      this.filterQuality = FilterQuality.none});
+      this.filterQuality = FilterQuality.none,
+      this.showFpsOverlay = false});
 
   @override
   _WebviewState createState() => _WebviewState();
@@ -1136,12 +1175,24 @@ class _WebviewState extends State<Webview> {
                     },
                     child: MouseRegion(
                         cursor: _cursor,
-                        child: Texture(
-                          textureId: _controller._textureId,
-                          filterQuality: widget.filterQuality,
-                        )),
+                        child: widget.showFpsOverlay
+                            ? Stack(fit: StackFit.expand, children: [
+                                _buildTexture(),
+                                Positioned(
+                                    top: 4,
+                                    right: 4,
+                                    child: _WebviewFpsOverlay(_controller)),
+                              ])
+                            : _buildTexture()),
                   )
                 : const SizedBox()));
+  }
+
+  Widget _buildTexture() {
+    return Texture(
+      textureId: _controller._textureId,
+      filterQuality: widget.filterQuality,
+    );
   }
 
   void _reportSurfaceSize() async {
@@ -1157,5 +1208,88 @@ class _WebviewState extends State<Webview> {
   void dispose() {
     super.dispose();
     _cursorSubscription?.cancel();
+  }
+}
+
+/// Periodically samples [WebviewController.getFrameCounts] and displays the
+/// resulting frame rates.
+class _WebviewFpsOverlay extends StatefulWidget {
+  final WebviewController controller;
+
+  const _WebviewFpsOverlay(this.controller);
+
+  @override
+  _WebviewFpsOverlayState createState() => _WebviewFpsOverlayState();
+}
+
+class _WebviewFpsOverlayState extends State<_WebviewFpsOverlay> {
+  static const _sampleInterval = Duration(milliseconds: 500);
+
+  Timer? _timer;
+  final Stopwatch _stopwatch = Stopwatch();
+  WebviewFrameCounts? _lastCounts;
+  double? _renderedFps;
+  double? _capturedFps;
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(_sampleInterval, (_) => _sample());
+    _sample();
+  }
+
+  Future<void> _sample() async {
+    final WebviewFrameCounts? counts;
+    try {
+      counts = await widget.controller.getFrameCounts();
+    } on PlatformException {
+      return;
+    }
+    if (!mounted || counts == null) {
+      return;
+    }
+    final elapsed = _stopwatch.elapsedMicroseconds / 1e6;
+    _stopwatch
+      ..reset()
+      ..start();
+    final last = _lastCounts;
+    _lastCounts = counts;
+    if (last == null || elapsed <= 0) {
+      return;
+    }
+    setState(() {
+      _renderedFps = (counts.rendered - last.rendered) / elapsed;
+      _capturedFps = (counts.captured - last.captured) / elapsed;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final rendered = _renderedFps?.toStringAsFixed(0) ?? '--';
+    final captured = _capturedFps?.toStringAsFixed(0) ?? '--';
+    return IgnorePointer(
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+        decoration: BoxDecoration(
+          color: const Color(0xB0000000),
+          borderRadius: BorderRadius.circular(4),
+        ),
+        child: Text(
+          '$rendered FPS (captured $captured)',
+          textDirection: TextDirection.ltr,
+          style: const TextStyle(
+            color: Color(0xFF00FF00),
+            fontSize: 12,
+            fontFamily: 'monospace',
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
   }
 }

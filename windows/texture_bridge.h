@@ -16,6 +16,14 @@ typedef struct {
   size_t height;
 } Size;
 
+// Cumulative frame counters, used to derive FPS for debugging.
+typedef struct {
+  // Frames delivered by Windows Graphics Capture (i.e. produced by WebView2).
+  uint64_t captured;
+  // Frames copied into the Flutter texture (after any FPS limit is applied).
+  uint64_t rendered;
+} FrameCounts;
+
 class TextureBridge {
  public:
   typedef std::function<void()> FrameAvailableCallback;
@@ -39,6 +47,7 @@ class TextureBridge {
 
   void NotifySurfaceSizeChanged();
   void SetFpsLimit(std::optional<int> max_fps);
+  FrameCounts GetFrameCounts();
 
  protected:
   bool is_running_ = false;
@@ -58,6 +67,8 @@ class TextureBridge {
   bool frame_dirty_ = false;
   std::optional<std::chrono::high_resolution_clock::time_point>
       last_frame_timestamp_;
+  // Guarded by mutex_.
+  FrameCounts frame_counts_ = {0, 0};
 
   winrt::com_ptr<ABI::Windows::Graphics::Capture::IGraphicsCaptureItem>
       capture_item_;

@@ -89,6 +89,7 @@ TextureBridgeGpu::GetSurfaceDescriptor(size_t width, size_t height) {
   if (last_frame_ && (frame_dirty_ || !surface_)) {
     ProcessFrame(last_frame_);
     frame_dirty_ = false;
+    frame_counts_.rendered++;
   }
 
   if (surface_) {

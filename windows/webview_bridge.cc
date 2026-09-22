@@ -47,6 +47,7 @@ constexpr auto kMethodSetNavigationBlocklist = "setNavigationBlocklist";
 constexpr auto kMethodSetNewWindowDelegateEnabled =
     "setNewWindowDelegateEnabled";
 constexpr auto kMethodSetFpsLimit = "setFpsLimit";
+constexpr auto kMethodGetFrameCounts = "getFrameCounts";
 constexpr auto kMethodSetInterceptedAcceleratorKeys =
     "setInterceptedAcceleratorKeys";
 constexpr auto kMethodRequestFocus = "requestFocus";
@@ -1030,6 +1031,16 @@ void WebviewBridge::HandleMethodCall(
                                                : std::make_optional(*value));
       return result->Success();
     }
+  }
+
+  if (method_name.compare(kMethodGetFrameCounts) == 0) {
+    const auto counts = texture_bridge_->GetFrameCounts();
+    return result->Success(flutter::EncodableValue(flutter::EncodableMap{
+        {flutter::EncodableValue("captured"),
+         flutter::EncodableValue(static_cast<int64_t>(counts.captured))},
+        {flutter::EncodableValue("rendered"),
+         flutter::EncodableValue(static_cast<int64_t>(counts.rendered))},
+    }));
   }
 
   result->NotImplemented();

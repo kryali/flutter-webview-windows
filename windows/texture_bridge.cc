@@ -154,6 +154,7 @@ void TextureBridge::OnFrameArrived() {
           frame_surface;
 
       if (SUCCEEDED(frame->get_Surface(frame_surface.put()))) {
+        frame_counts_.captured++;
         last_frame_ =
             util::TryGetDXGIInterfaceFromObject<ID3D11Texture2D>(frame_surface);
         has_frame = !ShouldDropFrame();
@@ -219,4 +220,9 @@ void TextureBridge::SetFpsLimit(std::optional<int> max_fps) {
     frame_duration_.reset();
     last_frame_timestamp_.reset();
   }
+}
+
+FrameCounts TextureBridge::GetFrameCounts() {
+  const std::lock_guard<std::mutex> lock(mutex_);
+  return frame_counts_;
 }

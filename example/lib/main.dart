@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:async';
@@ -149,6 +150,7 @@ class _ExampleBrowser extends State<ExampleBrowser> {
                         Webview(
                           _controller,
                           permissionRequested: _onPermissionRequested,
+                          showFpsOverlay: kDebugMode,
                         ),
                         StreamBuilder<LoadingState>(
                             stream: _controller.loadingState,
