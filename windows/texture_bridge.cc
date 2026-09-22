@@ -52,9 +52,15 @@ bool TextureBridge::Start() {
   ABI::Windows::Graphics::SizeInt32 size;
   capture_item_->get_Size(&size);
 
-  // Free-threaded: FrameArrived is delivered on an arbitrary pool thread
-  // instead of requiring (and blocking) this thread's DispatcherQueue.
-  frame_pool_ = graphics_context_->CreateFreeThreadedCaptureFramePool(
+  // CreateFreeThreadedCaptureFramePool was tried here to avoid blocking this
+  // thread's DispatcherQueue, but for this plugin's capture item (created
+  // from a raw composition visual rather than a window/monitor) it never
+  // delivers a single FrameArrived callback, even though CreateFreeThreaded
+  // and StartCapture both report success - confirmed by instrumenting the
+  // pipeline: capture starts, GetSurfaceDescriptor is polled repeatedly, but
+  // OnFrameArrived is never entered. Back to the dispatcher-bound pool,
+  // which does deliver frames, until that platform-level gap is understood.
+  frame_pool_ = graphics_context_->CreateCaptureFramePool(
       graphics_context_->device(),
       static_cast<ABI::Windows::Graphics::DirectX::DirectXPixelFormat>(
           kPixelFormat),
